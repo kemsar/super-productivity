@@ -86,6 +86,7 @@
     "release": "npm run release.changelog && npm run dist",
     "release.changelog": "conventional-changelog -i CHANGELOG.md -s -p angular",
     "removeWOFF1": "node ./tools/remove-woff.js",
+    "serveDev": "ng serve",
     "serveProd": "ng serve --configuration production",
     "start": "npm run electron:build && cross-env NODE_ENV=DEV electron .",
     "startDebug": "npm run electron:build && cross-env NODE_ENV=DEV electron --remote-debugging-port=9223 .",
