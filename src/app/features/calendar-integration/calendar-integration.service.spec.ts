@@ -16,6 +16,7 @@ import {
 import { SnackService } from '../../core/snack/snack.service';
 import { take } from 'rxjs/operators';
 import { Subscription } from 'rxjs';
+import { getDbDateStr } from '../../util/get-db-date-str';
 
 describe('CalendarIntegrationService', () => {
   let service: CalendarIntegrationService;
@@ -731,7 +732,8 @@ END:VCALENDAR`;
       localStorage.clear();
 
       const skippedIds = ['event-1', 'event-2'];
-      const today = new Date().toISOString().split('T')[0];
+      // Use the same date format as the service
+      const today = getDbDateStr();
 
       localStorage.setItem(
         'SUP_CALENDER_EVENTS_SKIPPED_TODAY',
