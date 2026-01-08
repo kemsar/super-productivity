@@ -170,19 +170,7 @@ export class GitlabCommonInterfacesService implements IssueServiceInterface {
       const issue = await this._gitlabApiService.getById$(task.issueId, cfg).toPromise();
       if (issue) {
         const issueUpdate: number = new Date(issue.updated_at).getTime();
-        const commentsByOthers =
-          cfg.filterUsername && cfg.filterUsername.length > 1
-            ? issue.comments.filter(
-                (comment) => comment.author.username !== cfg.filterUsername,
-              )
-            : issue.comments;
-
-        const updates: number[] = [
-          ...commentsByOthers.map((comment) => new Date(comment.created_at).getTime()),
-          issueUpdate,
-        ].sort();
-        const lastRemoteUpdate = updates[updates.length - 1];
-        const wasUpdated = lastRemoteUpdate > (task.issueLastUpdated || 0);
+        const wasUpdated = issueUpdate > (task.issueLastUpdated || 0);
         const forceUpdate = cfg?.isForceUpdate || false;
         if (wasUpdated || forceUpdate) {
           const taskData = this.getAddTaskData(issue, cfg);
