@@ -187,9 +187,15 @@ export class GitlabCommonInterfacesService implements IssueServiceInterface {
         if (wasUpdated || forceUpdate) {
           const taskData = this.getAddTaskData(issue, cfg);
           const newTagIds = cfg?.isImportGitLabLabels ? taskData.tagIds || [] : [];
-          // Merge and deduplicate tag IDs
           const existingTagIds = task.tagIds || [];
-          const mergedTagIds = [...new Set([...existingTagIds, ...newTagIds])];
+          const gitlabFolderTagIds = this._getGitLabFolderTagIds();
+
+          // Remove existing GitLab tags that are not in new tags
+          const nonGitlabExistingTags = existingTagIds.filter(
+            (tagId) => !gitlabFolderTagIds.includes(tagId),
+          );
+          const mergedTagIds = [...new Set([...nonGitlabExistingTags, ...newTagIds])];
+
           updatedIssues.push({
             task,
             taskChanges: {
@@ -254,6 +260,38 @@ export class GitlabCommonInterfacesService implements IssueServiceInterface {
 
   private _isIssueDone(issue: GitlabIssue): boolean {
     return issue.state === 'closed';
+  }
+
+  // Add this helper method to get tags in GitLab folder
+  private _getGitLabFolderTagIds(): string[] {
+    const tagTree = this._menuTreeService.tagTree();
+    const gitlabFolder = this._findGitLabFolder(tagTree);
+    return gitlabFolder ? this._collectTagIdsFromFolder(gitlabFolder) : [];
+  }
+
+  private _findGitLabFolder(tree: any[]): any | null {
+    for (const node of tree) {
+      if (node.k === 'f' && node.name === 'GitLab') {
+        return node;
+      }
+      if (node.k === 'f' && node.children) {
+        const found = this._findGitLabFolder(node.children);
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  private _collectTagIdsFromFolder(folder: any): string[] {
+    const tagIds: string[] = [];
+    for (const child of folder.children) {
+      if (child.k === 't') {
+        tagIds.push(child.id);
+      } else if (child.k === 'f') {
+        tagIds.push(...this._collectTagIdsFromFolder(child));
+      }
+    }
+    return tagIds;
   }
 
   private _createTagsFromLabels(labels: string[]): string[] {
