@@ -1,6 +1,6 @@
 import { inject, Injectable } from '@angular/core';
 import { firstValueFrom, Observable } from 'rxjs';
-import { map } from 'rxjs/operators';
+import { map, tap } from 'rxjs/operators';
 import { Task } from 'src/app/features/tasks/task.model';
 import { BaseIssueProviderService } from '../../base/base-issue-provider.service';
 import { IssueData, SearchResultItem } from '../../issue.model';
@@ -15,9 +15,15 @@ import { GITLAB_BASE_URL, GITLAB_POLL_INTERVAL } from './gitlab.const';
 })
 export class GitlabCommonInterfacesService extends BaseIssueProviderService<GitlabCfg> {
   private readonly _gitlabApiService = inject(GitlabApiService);
+  private _cachedCfg?: GitlabCfg;
 
   readonly providerKey = 'GITLAB' as const;
-  readonly pollInterval: number = GITLAB_POLL_INTERVAL;
+
+  get pollInterval(): number {
+    return this._cachedCfg?.pollIntervalMinutes
+      ? this._cachedCfg.pollIntervalMinutes * 60 * 1000
+      : GITLAB_POLL_INTERVAL;
+  }
 
   isEnabled(cfg: GitlabCfg): boolean {
     return !!cfg && cfg.isEnabled && !!cfg.project;
@@ -97,6 +103,15 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
 
   protected _getIssueLastUpdated(issue: IssueData): number {
     return new Date((issue as GitlabIssue).updated_at).getTime();
+  }
+
+  // Caches config for the pollInterval getter (mirrors CalDAV / NextcloudDeck).
+  protected override _getCfgOnce$(issueProviderId: string): Observable<GitlabCfg> {
+    return super._getCfgOnce$(issueProviderId).pipe(
+      tap((cfg) => {
+        this._cachedCfg = cfg;
+      }),
+    );
   }
 
   private _formatIssueTitle(issue: GitlabIssue): string {

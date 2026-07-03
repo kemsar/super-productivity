@@ -127,6 +127,15 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
           description: T.F.GITLAB.FORM.SUBMIT_TIMELOGS_DESCRIPTION,
         },
       },
+      {
+        key: 'pollIntervalMinutes',
+        type: 'input',
+        templateOptions: {
+          label: T.F.GITLAB.FORM.POLL_INTERVAL_MINUTES,
+          type: 'number',
+          min: 1,
+        },
+      },
     ],
   },
 ];

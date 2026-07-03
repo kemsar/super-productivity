@@ -3,7 +3,8 @@ import { of } from 'rxjs';
 import { GitlabCommonInterfacesService } from './gitlab-common-interfaces.service';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
 import { IssueProviderService } from '../../issue-provider.service';
-import { DEFAULT_GITLAB_CFG } from './gitlab.const';
+import { DEFAULT_GITLAB_CFG, GITLAB_POLL_INTERVAL } from './gitlab.const';
+import { GitlabCfg } from './gitlab.model';
 import { GitlabIssue } from './gitlab-issue.model';
 import {
   GitlabOriginalComment,
@@ -127,6 +128,31 @@ describe('GitlabCommonInterfacesService', () => {
       ],
     });
     service = TestBed.inject(GitlabCommonInterfacesService);
+  });
+
+  describe('pollInterval', () => {
+    it('falls back to GITLAB_POLL_INTERVAL when pollIntervalMinutes is unset', () => {
+      expect(service.pollInterval).toBe(GITLAB_POLL_INTERVAL);
+    });
+
+    it('derives from cfg.pollIntervalMinutes when set', () => {
+      (service as unknown as { _cachedCfg?: GitlabCfg })._cachedCfg = {
+        ...BASE_CFG,
+        pollIntervalMinutes: 2,
+      };
+      expect(service.pollInterval).toBe(2 * 60 * 1000);
+    });
+
+    it('caches cfg via _getCfgOnce$ so poll timer reads the effective interval', async () => {
+      issueProviderService.getCfgOnce$.and.returnValue(
+        of({ ...BASE_CFG, pollIntervalMinutes: 1 }),
+      );
+      gitlabApiService.getProjectIssues$.and.returnValue(of([]));
+
+      await service.getNewIssuesToAddToBacklog(ISSUE_PROVIDER_ID, []);
+
+      expect(service.pollInterval).toBe(60 * 1000);
+    });
   });
 
   describe('getFreshDataForIssueTask', () => {

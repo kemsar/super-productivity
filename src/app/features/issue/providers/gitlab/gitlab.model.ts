@@ -12,4 +12,5 @@ export interface GitlabCfg extends BaseIssueProviderCfg {
   filter?: string | null;
   /** @deprecated backwards compatibility: optional for persisted data created before this field existed */
   isEnableTimeTracking?: boolean;
+  pollIntervalMinutes?: number;
 }
