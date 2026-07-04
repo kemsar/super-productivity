@@ -21,6 +21,12 @@ export const GITLAB_ISSUE_CONTENT_CONFIG: IssueContentConfig<GitlabIssue> = {
       type: IssueFieldType.TEXT,
     },
     {
+      label: T.F.GITLAB.ISSUE_CONTENT.WORK_ITEM_STATUS,
+      type: IssueFieldType.TEXT,
+      value: (issue: GitlabIssue) => issue.status?.name,
+      isVisible: (issue: GitlabIssue) => !!issue.status?.name,
+    },
+    {
       label: T.F.ISSUE.ISSUE_CONTENT.ASSIGNEE,
       type: IssueFieldType.LINK,
       value: (issue: GitlabIssue) => issue.assignee?.username,

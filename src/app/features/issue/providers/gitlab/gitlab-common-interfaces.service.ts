@@ -1,10 +1,11 @@
 import { inject, Injectable } from '@angular/core';
 import { firstValueFrom, Observable } from 'rxjs';
-import { map, tap } from 'rxjs/operators';
+import { catchError, map, tap } from 'rxjs/operators';
 import { Task } from 'src/app/features/tasks/task.model';
 import { BaseIssueProviderService } from '../../base/base-issue-provider.service';
 import { IssueData, SearchResultItem } from '../../issue.model';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
+import { GitlabGraphqlApiService } from './gitlab-api/gitlab-graphql-api.service';
 import { GitlabCfg } from './gitlab.model';
 import { GitlabIssue } from './gitlab-issue.model';
 import { truncate } from '../../../../util/truncate';
@@ -15,6 +16,7 @@ import { GITLAB_BASE_URL, GITLAB_POLL_INTERVAL } from './gitlab.const';
 })
 export class GitlabCommonInterfacesService extends BaseIssueProviderService<GitlabCfg> {
   private readonly _gitlabApiService = inject(GitlabApiService);
+  private readonly _gitlabGraphqlApiService = inject(GitlabGraphqlApiService);
   private _cachedCfg?: GitlabCfg;
 
   readonly providerKey = 'GITLAB' as const;
@@ -31,9 +33,7 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
 
   testConnection(cfg: GitlabCfg): Promise<boolean> {
     return firstValueFrom(
-      this._gitlabApiService
-        .searchIssueInProject$('', cfg)
-        .pipe(map((res) => Array.isArray(res))),
+      this._searchIssuesWithFallback$('', cfg).pipe(map((res) => Array.isArray(res))),
     ).then((result) => result ?? false);
   }
 
@@ -80,6 +80,13 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     _allExistingIssueIds: number[] | string[],
   ): Promise<IssueData[]> {
     const cfg = await firstValueFrom(this._getCfgOnce$(issueProviderId));
+    if (this._gitlabGraphqlApiService.isAvailable(cfg)) {
+      try {
+        return await firstValueFrom(this._gitlabGraphqlApiService.getProjectIssues$(cfg));
+      } catch {
+        // Fall through to REST — GraphQL is now marked unavailable for the session.
+      }
+    }
     return await firstValueFrom(this._gitlabApiService.getProjectIssues$(cfg));
   }
 
@@ -87,13 +94,33 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     id: string | number,
     cfg: GitlabCfg,
   ): Observable<IssueData | null> {
-    return this._gitlabApiService.getById$(id.toString(), cfg);
+    const idStr = id.toString();
+    if (this._gitlabGraphqlApiService.isAvailable(cfg)) {
+      return this._gitlabGraphqlApiService
+        .getById$(idStr, cfg)
+        .pipe(catchError(() => this._gitlabApiService.getById$(idStr, cfg)));
+    }
+    return this._gitlabApiService.getById$(idStr, cfg);
   }
 
   protected _apiSearchIssues$(
     searchTerm: string,
     cfg: GitlabCfg,
   ): Observable<SearchResultItem[]> {
+    return this._searchIssuesWithFallback$(searchTerm, cfg);
+  }
+
+  private _searchIssuesWithFallback$(
+    searchTerm: string,
+    cfg: GitlabCfg,
+  ): Observable<SearchResultItem[]> {
+    if (this._gitlabGraphqlApiService.isAvailable(cfg)) {
+      return this._gitlabGraphqlApiService
+        .searchIssueInProject$(searchTerm, cfg)
+        .pipe(
+          catchError(() => this._gitlabApiService.searchIssueInProject$(searchTerm, cfg)),
+        );
+    }
     return this._gitlabApiService.searchIssueInProject$(searchTerm, cfg);
   }
 
