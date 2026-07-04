@@ -318,6 +318,67 @@ export class ValidateStateService {
     }
 
     // User confirmed - proceed with repair
+    const repairResult = await this._runRepair(state, validationResult);
+    if (!repairResult.isValid && repairResult.wasRepaired) {
+      // Repair produced output but re-validation still failed — notify user with
+      // an alert dialog since they explicitly opted in via confirmDialog.
+      alertDialog(
+        'Repair attempted but failed to fully fix data issues. ' +
+          'Please try restoring from a backup or contact support.',
+      );
+    }
+    return repairResult;
+  }
+
+  /**
+   * Non-interactive variant of {@link validateAndRepair} that skips the
+   * confirmation dialog. Intended for boot-time paths (snapshot migration,
+   * legacy recovery) where blocking on a native `confirm()` isn't viable
+   * (Angular isn't fully bootstrapped and the confirm steals focus on
+   * Windows — #7631) and where the alternative is an empty store on next
+   * launch. Callers are responsible for surfacing a persistent snackbar so
+   * silent data-shape drift stays visible.
+   */
+  async validateAndRepairWithoutConfirm(
+    state: Record<string, unknown>,
+  ): Promise<ValidateAndRepairResult> {
+    const validationResult = await this.validateState(state);
+    if (validationResult.isValid) {
+      return {
+        isValid: true,
+        wasRepaired: false,
+      };
+    }
+
+    OpLog.warn(
+      '[ValidateStateService] State invalid, attempting non-interactive repair...',
+      {
+        typiaErrorCount: validationResult.typiaErrors.length,
+        crossModelError: validationResult.crossModelError,
+      },
+    );
+
+    if (!isDataRepairPossible(state as AppDataComplete)) {
+      OpLog.err('[ValidateStateService] Data repair not possible - state too corrupted');
+      return {
+        isValid: false,
+        wasRepaired: false,
+        error:
+          'Data repair not possible - state too corrupted. Please restore from a backup.',
+      };
+    }
+
+    return this._runRepair(state, validationResult);
+  }
+
+  /**
+   * Runs `dataRepair()` on the given state and revalidates the output.
+   * Assumes the caller has already checked `isDataRepairPossible()`.
+   */
+  private async _runRepair(
+    state: Record<string, unknown>,
+    validationResult: StateValidationResult,
+  ): Promise<ValidateAndRepairResult> {
     try {
       const typiaErrors = validationResult.typiaErrors as IValidation.IError[];
       const { dataRepair } = await import('./data-repair');
@@ -328,12 +389,10 @@ export class ValidateStateService {
       // Validate the repaired state to confirm it's now valid
       const revalidationResult = await this.validateState(repairedState);
       if (!revalidationResult.isValid) {
-        OpLog.err('[ValidateStateService] State still invalid after repair');
-        // Notify user that repair failed - they confirmed but it didn't work
-        alertDialog(
-          'Repair attempted but failed to fully fix data issues. ' +
-            'Please try restoring from a backup or contact support.',
-        );
+        OpLog.err('[ValidateStateService] State still invalid after repair', {
+          typiaErrorCount: revalidationResult.typiaErrors.length,
+          crossModelError: revalidationResult.crossModelError,
+        });
         return {
           isValid: false,
           wasRepaired: true,

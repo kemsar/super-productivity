@@ -12,6 +12,8 @@ import { PENDING_OPERATION_EXPIRY_MS } from '../core/operation-log.const';
 import { OpLog } from '../../core/log';
 import { AppDataComplete } from '../model/model-config';
 import { ValidateStateService } from '../validation/validate-state.service';
+import { SnackService } from '../../core/snack/snack.service';
+import { T } from '../../t.const';
 
 /**
  * Handles crash recovery and data restoration for the operation log system.
@@ -31,6 +33,7 @@ export class OperationLogRecoveryService {
   private legacyPfDb = inject(LegacyPfDbService);
   private clientIdService = inject(ClientIdService);
   private validateStateService = inject(ValidateStateService);
+  private snackService = inject(SnackService);
 
   /**
    * Attempts to recover from a corrupted or missing SUP_OPS database.
@@ -76,19 +79,43 @@ export class OperationLogRecoveryService {
    * Recovers from legacy data by creating a new genesis snapshot.
    */
   async recoverFromLegacyData(legacyData: Record<string, unknown>): Promise<void> {
-    // Refuse to import legacy data that doesn't validate. Importing corrupted
-    // legacy data would just propagate the corruption into SUP_OPS and the next
-    // hydration would fail validation in turn.
+    // Validate legacy data. Importing corrupted legacy data would propagate
+    // the corruption into SUP_OPS and the next hydration would fail
+    // validation in turn. If strict validation fails, attempt non-interactive
+    // repair before refusing — otherwise the user is stuck with an empty
+    // store on every launch (see #9). Only refuse when repair itself cannot
+    // produce a valid state.
     const validationResult = await this.validateStateService.validateState(legacyData);
+    let dataToImport = legacyData;
+    let wasRepaired = false;
     if (!validationResult.isValid) {
-      OpLog.err('OperationLogRecoveryService: Refusing to import invalid legacy data', {
-        typiaErrorCount: validationResult.typiaErrors.length,
-        crossModelError: validationResult.crossModelError,
-      });
-      throw new Error(
-        `Legacy recovery data validation failed (${validationResult.typiaErrors.length} typia errors` +
-          `${validationResult.crossModelError ? `, cross-model: ${validationResult.crossModelError}` : ''})`,
+      OpLog.warn(
+        'OperationLogRecoveryService: Legacy data failed validation. Attempting repair...',
+        {
+          typiaErrorCount: validationResult.typiaErrors.length,
+          crossModelError: validationResult.crossModelError,
+        },
       );
+      const repairResult =
+        await this.validateStateService.validateAndRepairWithoutConfirm(legacyData);
+      if (!repairResult.isValid || !repairResult.repairedState) {
+        OpLog.err('OperationLogRecoveryService: Refusing to import invalid legacy data', {
+          typiaErrorCount: validationResult.typiaErrors.length,
+          crossModelError: validationResult.crossModelError,
+          repairError: repairResult.error,
+        });
+        throw new Error(
+          `Legacy recovery data validation failed (${validationResult.typiaErrors.length} typia errors` +
+            `${validationResult.crossModelError ? `, cross-model: ${validationResult.crossModelError}` : ''})` +
+            (repairResult.error ? ` — repair failed: ${repairResult.error}` : ''),
+        );
+      }
+      OpLog.warn(
+        'OperationLogRecoveryService: Repaired legacy data after validation failure.',
+        { repairSummary: repairResult.repairSummary },
+      );
+      dataToImport = repairResult.repairedState;
+      wasRepaired = true;
     }
 
     const clientId = await this.clientIdService.loadClientId();
@@ -103,7 +130,7 @@ export class OperationLogRecoveryService {
       opType: OpType.Batch,
       entityType: 'RECOVERY',
       entityId: SINGLETON_ENTITY_ID,
-      payload: legacyData,
+      payload: dataToImport,
       clientId: clientId,
       vectorClock: { [clientId]: 1 },
       timestamp: Date.now(),
@@ -116,7 +143,7 @@ export class OperationLogRecoveryService {
     // Create state cache
     const lastSeq = await this.opLogStore.getLastSeq();
     await this.opLogStore.saveStateCache({
-      state: legacyData,
+      state: dataToImport,
       lastAppliedOpSeq: lastSeq,
       vectorClock: recoveryOp.vectorClock,
       compactedAt: Date.now(),
@@ -127,11 +154,33 @@ export class OperationLogRecoveryService {
     await this.opLogStore.setVectorClock(recoveryOp.vectorClock);
 
     // Dispatch to NgRx
-    this.store.dispatch(loadAllData({ appDataComplete: legacyData as AppDataComplete }));
+    this.store.dispatch(
+      loadAllData({ appDataComplete: dataToImport as AppDataComplete }),
+    );
+
+    if (wasRepaired) {
+      this._notifyRepairApplied();
+    }
 
     OpLog.normal(
       'OperationLogRecoveryService: Recovery complete. Data restored from legacy database.',
     );
+  }
+
+  /**
+   * Surfaces silent boot-time repair of legacy recovery data to the user.
+   * Errors are swallowed because recovery must never fail because of a UI
+   * notification.
+   */
+  private _notifyRepairApplied(): void {
+    try {
+      this.snackService.open({
+        type: 'ERROR',
+        msg: T.F.SYNC.S.INTEGRITY_CHECK_FAILED,
+      });
+    } catch (err) {
+      OpLog.warn('OperationLogRecoveryService: Failed to emit repair notification', err);
+    }
   }
 
   /**
