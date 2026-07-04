@@ -1,7 +1,8 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { GitlabCommonInterfacesService } from './gitlab-common-interfaces.service';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
+import { GitlabGraphqlApiService } from './gitlab-api/gitlab-graphql-api.service';
 import { IssueProviderService } from '../../issue-provider.service';
 import { DEFAULT_GITLAB_CFG } from './gitlab.const';
 import { GitlabIssue } from './gitlab-issue.model';
@@ -108,6 +109,7 @@ const makeTask = (issueLastUpdated: number): Task =>
 describe('GitlabCommonInterfacesService', () => {
   let service: GitlabCommonInterfacesService;
   let gitlabApiService: jasmine.SpyObj<GitlabApiService>;
+  let gitlabGraphqlApiService: jasmine.SpyObj<GitlabGraphqlApiService>;
   let issueProviderService: jasmine.SpyObj<IssueProviderService>;
 
   beforeEach(() => {
@@ -116,6 +118,14 @@ describe('GitlabCommonInterfacesService', () => {
       'searchIssueInProject$',
       'getProjectIssues$',
     ]);
+    gitlabGraphqlApiService = jasmine.createSpyObj('GitlabGraphqlApiService', [
+      'isAvailable',
+      'getById$',
+      'searchIssueInProject$',
+      'getProjectIssues$',
+    ]);
+    // Default: GraphQL disabled so existing behavior specs exercise REST unchanged.
+    gitlabGraphqlApiService.isAvailable.and.returnValue(false);
     issueProviderService = jasmine.createSpyObj('IssueProviderService', ['getCfgOnce$']);
     issueProviderService.getCfgOnce$.and.returnValue(of(BASE_CFG));
 
@@ -123,6 +133,7 @@ describe('GitlabCommonInterfacesService', () => {
       providers: [
         GitlabCommonInterfacesService,
         { provide: GitlabApiService, useValue: gitlabApiService },
+        { provide: GitlabGraphqlApiService, useValue: gitlabGraphqlApiService },
         { provide: IssueProviderService, useValue: issueProviderService },
       ],
     });
@@ -168,6 +179,51 @@ describe('GitlabCommonInterfacesService', () => {
       expect(issue.body).toBe(ISSUE_BODY);
       expect(issue.commentsNr).toBe(1);
       expect(result?.issueTitle).toBe('#42 GitLab issue');
+    });
+  });
+
+  describe('GraphQL fallback', () => {
+    it('prefers GraphQL when available for getById', async () => {
+      gitlabGraphqlApiService.isAvailable.and.returnValue(true);
+      const gqlIssue = makeIssue(NEWER_UPDATED_AT);
+      gitlabGraphqlApiService.getById$.and.returnValue(of(gqlIssue));
+
+      const result = await service.getFreshDataForIssueTask(
+        makeTask(new Date(BASE_UPDATED_AT).getTime()),
+      );
+
+      expect(gitlabGraphqlApiService.getById$).toHaveBeenCalled();
+      expect(gitlabApiService.getById$).not.toHaveBeenCalled();
+      expect(result?.taskChanges.issueWasUpdated).toBe(true);
+    });
+
+    it('falls back to REST when GraphQL errors', async () => {
+      gitlabGraphqlApiService.isAvailable.and.returnValue(true);
+      gitlabGraphqlApiService.getById$.and.returnValue(
+        throwError(() => new Error('nope')),
+      );
+      const restIssue = makeIssue(NEWER_UPDATED_AT);
+      gitlabApiService.getById$.and.returnValue(of(restIssue));
+
+      const result = await service.getFreshDataForIssueTask(
+        makeTask(new Date(BASE_UPDATED_AT).getTime()),
+      );
+
+      expect(gitlabGraphqlApiService.getById$).toHaveBeenCalled();
+      expect(gitlabApiService.getById$).toHaveBeenCalled();
+      expect(result?.taskChanges.issueWasUpdated).toBe(true);
+    });
+
+    it('skips GraphQL entirely when isAvailable is false', async () => {
+      gitlabGraphqlApiService.isAvailable.and.returnValue(false);
+      gitlabApiService.getById$.and.returnValue(of(makeIssue(BASE_UPDATED_AT)));
+
+      await service.getFreshDataForIssueTask(
+        makeTask(new Date(BASE_UPDATED_AT).getTime()),
+      );
+
+      expect(gitlabGraphqlApiService.getById$).not.toHaveBeenCalled();
+      expect(gitlabApiService.getById$).toHaveBeenCalled();
     });
   });
 });

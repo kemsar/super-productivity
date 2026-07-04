@@ -9,6 +9,14 @@ export type GitlabState = GitlabOriginalIssueState;
 export type GitlabUser = GitlabOriginalUser;
 export type GitlabComment = GitlabOriginalComment;
 
+// Populated only when the issue was fetched via the Work Items GraphQL API on a
+// GitLab tier that exposes the status widget (Premium/Ultimate). Absent for REST
+// results and instances without the widget.
+export interface GitlabWorkItemStatus {
+  readonly name: string;
+  readonly category: string;
+}
+
 export type GitlabIssue = Readonly<{
   // repository_url: string;
   // labels_url: string;
@@ -50,4 +58,9 @@ export type GitlabIssue = Readonly<{
     award_emoji: string;
     project: string;
   };
+  // Custom lifecycle status from the Work Items status widget.
+  status?: GitlabWorkItemStatus;
+  // Global ID (gid://gitlab/Issue/...) used by workItemUpdate. Present only on
+  // GraphQL-sourced issues.
+  workItemGid?: string;
 }>;
