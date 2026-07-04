@@ -13,6 +13,7 @@ import { ValidateStateService } from '../validation/validate-state.service';
 import { LockService } from '../sync/lock.service';
 import { LOCK_NAMES } from '../core/operation-log.const';
 import { MAX_VECTOR_CLOCK_SIZE } from '@sp/sync-core';
+import { SnackService } from '../../core/snack/snack.service';
 
 // Meaningful state (contains a task) so saveCurrentStateAsSnapshot proceeds past
 // the empty-state guard (#7892). Tests that care only about clock pruning /
@@ -31,6 +32,7 @@ describe('OperationLogSnapshotService', () => {
   let mockClientIdProvider: jasmine.SpyObj<ClientIdProvider>;
   let mockValidateStateService: jasmine.SpyObj<ValidateStateService>;
   let mockLockService: jasmine.SpyObj<LockService>;
+  let mockSnackService: jasmine.SpyObj<SnackService>;
 
   beforeEach(() => {
     mockOpLogStore = jasmine.createSpyObj('OperationLogStoreService', [
@@ -53,11 +55,17 @@ describe('OperationLogSnapshotService', () => {
     mockClientIdProvider.loadClientId.and.resolveTo('test-client');
     mockValidateStateService = jasmine.createSpyObj('ValidateStateService', [
       'validateState',
+      'validateAndRepairWithoutConfirm',
     ]);
     mockValidateStateService.validateState.and.resolveTo({
       isValid: true,
       typiaErrors: [],
     });
+    mockValidateStateService.validateAndRepairWithoutConfirm.and.resolveTo({
+      isValid: true,
+      wasRepaired: false,
+    });
+    mockSnackService = jasmine.createSpyObj('SnackService', ['open']);
     mockLockService = jasmine.createSpyObj('LockService', ['request']);
     // Default: execute the callback inline (mirrors real Web Locks behavior in Chrome)
     mockLockService.request.and.callFake(async <T>(_name: string, fn: () => Promise<T>) =>
@@ -74,6 +82,7 @@ describe('OperationLogSnapshotService', () => {
         { provide: CLIENT_ID_PROVIDER, useValue: mockClientIdProvider },
         { provide: ValidateStateService, useValue: mockValidateStateService },
         { provide: LockService, useValue: mockLockService },
+        { provide: SnackService, useValue: mockSnackService },
       ],
     });
     service = TestBed.inject(OperationLogSnapshotService);
@@ -535,7 +544,7 @@ describe('OperationLogSnapshotService', () => {
       );
     });
 
-    it('should restore backup and not save when migrated state fails validation', async () => {
+    it('should restore backup and not save when migrated state fails validation and repair', async () => {
       const snapshot = createSnapshot();
       const migratedSnapshot = { ...snapshot, schemaVersion: CURRENT_SCHEMA_VERSION };
       mockOpLogStore.saveStateCacheBackup.and.resolveTo(undefined);
@@ -543,6 +552,11 @@ describe('OperationLogSnapshotService', () => {
       mockValidateStateService.validateState.and.resolveTo({
         isValid: false,
         typiaErrors: [{ path: '$input.task', expected: 'TaskState' }],
+      });
+      mockValidateStateService.validateAndRepairWithoutConfirm.and.resolveTo({
+        isValid: false,
+        wasRepaired: false,
+        error: 'Data repair not possible',
       });
       mockOpLogStore.restoreStateCacheFromBackup.and.resolveTo(undefined);
 
@@ -553,6 +567,52 @@ describe('OperationLogSnapshotService', () => {
       expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
       expect(mockOpLogStore.restoreStateCacheFromBackup).toHaveBeenCalled();
       expect(mockOpLogStore.clearStateCacheBackup).not.toHaveBeenCalled();
+    });
+
+    it('should save repaired snapshot when validation fails but repair succeeds (#9)', async () => {
+      const snapshot = createSnapshot();
+      const migratedSnapshot = {
+        ...snapshot,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+      };
+      const repairedState = { task: {}, project: {}, globalConfig: { fixed: true } };
+      mockOpLogStore.saveStateCacheBackup.and.resolveTo(undefined);
+      mockSchemaMigrationService.migrateStateIfNeeded.and.returnValue(migratedSnapshot);
+      mockValidateStateService.validateState.and.resolveTo({
+        isValid: false,
+        typiaErrors: [{ path: '$input.globalConfig', expected: 'GlobalConfig' }],
+      });
+      mockValidateStateService.validateAndRepairWithoutConfirm.and.resolveTo({
+        isValid: true,
+        wasRepaired: true,
+        repairedState: repairedState as Record<string, unknown>,
+        repairSummary: {
+          entityStateFixed: 1,
+          orphanedEntitiesRestored: 0,
+          invalidReferencesRemoved: 0,
+          relationshipsFixed: 0,
+          structureRepaired: 0,
+          typeErrorsFixed: 1,
+        },
+      });
+      mockOpLogStore.saveStateCache.and.resolveTo(undefined);
+      mockOpLogStore.clearStateCacheBackup.and.resolveTo(undefined);
+
+      const result = await service.migrateSnapshotWithBackup(snapshot);
+
+      expect(
+        mockValidateStateService.validateAndRepairWithoutConfirm,
+      ).toHaveBeenCalledWith(migratedSnapshot.state as Record<string, unknown>);
+      expect(mockOpLogStore.saveStateCache).toHaveBeenCalledWith(
+        jasmine.objectContaining({
+          state: repairedState,
+          schemaVersion: CURRENT_SCHEMA_VERSION,
+        }),
+      );
+      expect(mockOpLogStore.clearStateCacheBackup).toHaveBeenCalled();
+      expect(mockOpLogStore.restoreStateCacheFromBackup).not.toHaveBeenCalled();
+      expect(mockSnackService.open).toHaveBeenCalled();
+      expect(result.state).toBe(repairedState);
     });
 
     it('should restore backup and not save when migrated metadata is invalid', async () => {
