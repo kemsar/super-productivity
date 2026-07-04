@@ -187,6 +187,58 @@ describe('ValidateStateService', () => {
     }
   });
 
+  describe('validateAndRepairWithoutConfirm', () => {
+    it('should repair without prompting the user (#9)', async () => {
+      // Sentinel: fail loudly if the non-interactive path ever gains a confirm().
+      // Refresh a possibly-existing spy so its call log starts clean for this test.
+      let confirmSpy: jasmine.Spy;
+      if (jasmine.isSpy(window.confirm)) {
+        confirmSpy = window.confirm as unknown as jasmine.Spy;
+        confirmSpy.calls.reset();
+        confirmSpy.and.returnValue(false);
+      } else {
+        confirmSpy = spyOn(window, 'confirm').and.returnValue(false);
+      }
+
+      const state = createEmptyState();
+      // Introduce a fix-able corruption
+      state.menuTree = {
+        ...(state.menuTree as MenuTreeState),
+        projectTree: [{ id: 'NON_EXISTENT_PROJECT_ID', k: MenuTreeKind.PROJECT }],
+      };
+
+      const result = await service.validateAndRepairWithoutConfirm(state);
+
+      expect(result.isValid).toBeTrue();
+      expect(result.wasRepaired).toBeTrue();
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect((result.repairedState!.menuTree as MenuTreeState).projectTree!.length).toBe(
+        0,
+      );
+    });
+
+    it('should return isValid=true and wasRepaired=false when state is already valid', async () => {
+      // Bypass the shared validateFull() so we test the branching on validateState
+      // rather than typia's judgement of the empty-state fixture.
+      spyOn(service, 'validateState').and.resolveTo({ isValid: true, typiaErrors: [] });
+
+      const result = await service.validateAndRepairWithoutConfirm(createEmptyState());
+
+      expect(result.isValid).toBeTrue();
+      expect(result.wasRepaired).toBeFalse();
+    });
+
+    it('should return an error when state is too corrupted to repair', async () => {
+      const state = { globalConfig: {} } as unknown as Record<string, unknown>;
+
+      const result = await service.validateAndRepairWithoutConfirm(state);
+
+      expect(result.isValid).toBeFalse();
+      expect(result.wasRepaired).toBeFalse();
+      expect(result.error).toContain('Data repair not possible');
+    });
+  });
+
   describe('records the critical-error signal (rating-prompt cooldown)', () => {
     let setItemSpy: jasmine.Spy;
 

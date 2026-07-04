@@ -15,6 +15,8 @@ import { ValidateStateService } from '../validation/validate-state.service';
 import { hasMeaningfulStateData } from '../validation/has-meaningful-state-data.util';
 import { LockService } from '../sync/lock.service';
 import { LOCK_NAMES } from '../core/operation-log.const';
+import { SnackService } from '../../core/snack/snack.service';
+import { T } from '../../t.const';
 
 type StateCache = MigratableStateCache;
 
@@ -38,6 +40,7 @@ export class OperationLogSnapshotService {
   private validateStateService = inject(ValidateStateService);
   private clientIdProvider: ClientIdProvider = inject(CLIENT_ID_PROVIDER);
   private lockService = inject(LockService);
+  private snackService = inject(SnackService);
 
   /**
    * Validates that a snapshot has the expected structure and data.
@@ -181,18 +184,46 @@ export class OperationLogSnapshotService {
 
       // 4. Validate migrated snapshot state before persisting or clearing the backup.
       // Otherwise an invalid current-schema cache could be trusted on next startup.
+      //
+      // If strict validation fails, attempt non-interactive repair before
+      // rolling back. Without this fallback the app enters a boot-then-reset
+      // loop whenever persisted data drifts from the schema (partial migration,
+      // an added required field, an old field with an unexpected shape) —
+      // strict-only rollback restores the same v1 snapshot that fails on the
+      // next launch too, so the store starts empty forever. See #9.
+      let snapshotToSave = migratedSnapshot;
       const validationResult = await this.validateStateService.validateState(
         migratedSnapshot.state as Record<string, unknown>,
       );
       if (!validationResult.isValid) {
-        throw new Error(
-          `Migrated snapshot validation failed (${validationResult.typiaErrors.length} typia errors` +
-            `${validationResult.crossModelError ? `, cross-model: ${validationResult.crossModelError}` : ''})`,
+        OpLog.warn(
+          'OperationLogSnapshotService: Migrated snapshot failed validation. Attempting repair...',
+          {
+            typiaErrorCount: validationResult.typiaErrors.length,
+            crossModelError: validationResult.crossModelError,
+          },
         );
+        const repairResult =
+          await this.validateStateService.validateAndRepairWithoutConfirm(
+            migratedSnapshot.state as Record<string, unknown>,
+          );
+        if (!repairResult.isValid || !repairResult.repairedState) {
+          throw new Error(
+            `Migrated snapshot validation failed (${validationResult.typiaErrors.length} typia errors` +
+              `${validationResult.crossModelError ? `, cross-model: ${validationResult.crossModelError}` : ''})` +
+              (repairResult.error ? ` — repair failed: ${repairResult.error}` : ''),
+          );
+        }
+        OpLog.warn(
+          'OperationLogSnapshotService: Repaired migrated snapshot after validation failure.',
+          { repairSummary: repairResult.repairSummary },
+        );
+        snapshotToSave = { ...migratedSnapshot, state: repairResult.repairedState };
+        this._notifyRepairApplied();
       }
 
       // 5. Save migrated snapshot
-      await this.opLogStore.saveStateCache(migratedSnapshot);
+      await this.opLogStore.saveStateCache(snapshotToSave);
 
       // 6. Clear backup on success
       await this.opLogStore.clearStateCacheBackup();
@@ -200,7 +231,7 @@ export class OperationLogSnapshotService {
         'OperationLogSnapshotService: Schema migration complete. Backup cleared.',
       );
 
-      return migratedSnapshot;
+      return snapshotToSave;
     } catch (e) {
       OpLog.err(
         'OperationLogSnapshotService: Schema migration failed. Restoring backup...',
@@ -228,6 +259,23 @@ export class OperationLogSnapshotService {
 
       // Re-throw original error after successful restore
       throw e;
+    }
+  }
+
+  /**
+   * Surfaces silent boot-time repair to the user. Without this, the app looks
+   * fine but the on-disk data was quietly patched — the user has no chance
+   * to review or export before continuing. Errors are swallowed because
+   * hydration must never fail because of a UI notification.
+   */
+  private _notifyRepairApplied(): void {
+    try {
+      this.snackService.open({
+        type: 'ERROR',
+        msg: T.F.SYNC.S.INTEGRITY_CHECK_FAILED,
+      });
+    } catch (err) {
+      OpLog.warn('OperationLogSnapshotService: Failed to emit repair notification', err);
     }
   }
 }
