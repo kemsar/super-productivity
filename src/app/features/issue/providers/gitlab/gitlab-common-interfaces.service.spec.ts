@@ -166,6 +166,85 @@ describe('GitlabCommonInterfacesService', () => {
     });
   });
 
+  describe('isEnabled', () => {
+    // Every source mode has its own "the minimum config required to actually
+    // poll" — miswiring this would either enable a provider that will 401 on
+    // every poll (all-assigned without a token) or silently disable a valid
+    // group config that lacks a legacy `project` value.
+    it('requires project when sourceMode is undefined (legacy back-compat)', () => {
+      expect(service.isEnabled({ ...BASE_CFG, sourceMode: undefined })).toBe(true);
+      expect(
+        service.isEnabled({ ...BASE_CFG, sourceMode: undefined, project: null }),
+      ).toBe(false);
+    });
+
+    it('requires group when sourceMode is group', () => {
+      expect(
+        service.isEnabled({
+          ...BASE_CFG,
+          sourceMode: 'group',
+          project: null,
+          group: 'my-org',
+        }),
+      ).toBe(true);
+      expect(
+        service.isEnabled({
+          ...BASE_CFG,
+          sourceMode: 'group',
+          project: null,
+          group: null,
+        }),
+      ).toBe(false);
+    });
+
+    it('requires a token when sourceMode is all-assigned', () => {
+      expect(
+        service.isEnabled({
+          ...BASE_CFG,
+          sourceMode: 'all-assigned',
+          project: null,
+          token: 'token',
+        }),
+      ).toBe(true);
+      expect(
+        service.isEnabled({
+          ...BASE_CFG,
+          sourceMode: 'all-assigned',
+          project: null,
+          token: null,
+        }),
+      ).toBe(false);
+    });
+
+    it('is disabled when the provider itself is turned off', () => {
+      expect(service.isEnabled({ ...BASE_CFG, isEnabled: false })).toBe(false);
+    });
+  });
+
+  describe('issueLink', () => {
+    it('derives the project from the issue id in group / all-assigned mode', async () => {
+      // In multi-project modes cfg.project is empty; without deriving it from
+      // the issue id, every generated link would be broken.
+      issueProviderService.getCfgOnce$.and.returnValue(
+        of({
+          ...BASE_CFG,
+          sourceMode: 'group',
+          project: null,
+          group: 'universityofcolorado/uis',
+          gitlabBaseUrl: 'https://gitlab.example.com',
+        }),
+      );
+
+      const link = await service.issueLink(
+        'universityofcolorado/uis/foo#42',
+        ISSUE_PROVIDER_ID,
+      );
+      expect(link).toBe(
+        'https://gitlab.example.com/universityofcolorado/uis/foo/-/issues/42',
+      );
+    });
+  });
+
   describe('getFreshDataForIssueTask', () => {
     it('does not flag an update when only a GitLab comment timestamp is later than issue.updated_at', async () => {
       const issueLastUpdated = new Date(BASE_UPDATED_AT).getTime();

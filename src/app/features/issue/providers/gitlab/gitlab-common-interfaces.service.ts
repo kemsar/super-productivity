@@ -28,7 +28,17 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
   }
 
   isEnabled(cfg: GitlabCfg): boolean {
-    return !!cfg && cfg.isEnabled && !!cfg.project;
+    if (!cfg || !cfg.isEnabled) {
+      return false;
+    }
+    const mode = cfg.sourceMode || 'project';
+    if (mode === 'group') {
+      return !!cfg.group;
+    }
+    if (mode === 'all-assigned') {
+      return !!cfg.token;
+    }
+    return !!cfg.project;
   }
 
   testConnection(cfg: GitlabCfg): Promise<boolean> {
@@ -41,14 +51,22 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     return firstValueFrom(
       this._getCfgOnce$(issueProviderId).pipe(
         map((cfg) => {
-          const project: string | null = cfg.project;
+          // In group / all-assigned modes there is no single project on the
+          // config — each issue can live in a different project. The issue
+          // id itself carries that: mapGitlabIssue writes `references.full`
+          // (e.g. `group/project#42`) into it, so parse the project out of
+          // the id and only fall back to cfg.project for legacy ids that
+          // are missing the namespace prefix.
+          const idStr = issueId.toString();
+          const hashIdx = idStr.indexOf('#');
+          const projectFromId = hashIdx > 0 ? idStr.slice(0, hashIdx) : '';
+          const project: string | null = projectFromId || cfg.project;
 
           if (!project) {
             return '';
           }
 
-          // Extract just the numeric issue ID from formats like 'project/repo#123' or '#123'
-          const cleanIssueId = issueId.toString().replace(/^.*#/, '');
+          const cleanIssueId = idStr.replace(/^.*#/, '');
 
           if (cfg.gitlabBaseUrl) {
             const fixedUrl = cfg.gitlabBaseUrl.match(/.*\/$/)

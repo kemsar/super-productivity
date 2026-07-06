@@ -10,7 +10,7 @@ import { parseUrl, stringifyUrl } from 'query-string';
 import { EMPTY, forkJoin, Observable, of } from 'rxjs';
 import { SnackService } from 'src/app/core/snack/snack.service';
 
-import { GitlabCfg } from '../gitlab.model';
+import { GitlabCfg, GitlabSourceMode } from '../gitlab.model';
 import { GitlabOriginalComment, GitlabOriginalIssue } from './gitlab-api-responses';
 import { GITLAB_API_BASE_URL } from '../gitlab.const';
 import { T } from 'src/app/t.const';
@@ -59,12 +59,21 @@ export class GitlabApiService {
     );
   }
 
+  private _getSourceMode(cfg: GitlabCfg): GitlabSourceMode {
+    return cfg.sourceMode || 'project';
+  }
+
   private getScopeParam(cfg: GitlabCfg): string {
+    // The top-level /issues endpoint always defaults scope to created_by_me
+    // for authenticated users, which is the wrong default for "all issues
+    // assigned to me across the instance" — force assigned_to_me instead.
+    if (this._getSourceMode(cfg) === 'all-assigned') {
+      return '&scope=assigned_to_me';
+    }
     if (cfg.scope) {
       return `&scope=${cfg.scope}`;
-    } else {
-      return '';
     }
+    return '';
   }
 
   private getCustomFilterParam(cfg: GitlabCfg): string {
@@ -120,9 +129,11 @@ export class GitlabApiService {
     }
     return this._sendIssuePaginatedRequest$(
       {
-        url: `${this._apiLink(cfg)}/issues?search=${searchText}${this.getScopeParam(
+        url: `${this._listIssuesApiLink(cfg)}?search=${searchText}${this.getScopeParam(
           cfg,
-        )}&order_by=updated_at${this.getCustomFilterParam(cfg)}`,
+        )}&order_by=updated_at${this.getExtraListParams(
+          cfg,
+        )}${this.getCustomFilterParam(cfg)}`,
       },
       cfg,
     ).pipe(
@@ -144,11 +155,11 @@ export class GitlabApiService {
   getProjectIssues$(cfg: GitlabCfg): Observable<GitlabIssue[]> {
     return this._sendIssuePaginatedRequest$(
       {
-        url: `${this._apiLink(
+        url: `${this._listIssuesApiLink(
           cfg,
-        )}/issues?state=opened&order_by=updated_at&${this.getScopeParam(
+        )}?state=opened&order_by=updated_at${this.getScopeParam(
           cfg,
-        )}${this.getCustomFilterParam(cfg)}`,
+        )}${this.getExtraListParams(cfg)}${this.getCustomFilterParam(cfg)}`,
       },
       cfg,
     ).pipe(take(1));
@@ -217,8 +228,17 @@ export class GitlabApiService {
   }
 
   private _isValidSettings(cfg: GitlabCfg): boolean {
-    if (cfg && cfg.project && cfg.project.length > 0) {
-      return true;
+    if (cfg) {
+      const mode = this._getSourceMode(cfg);
+      if (mode === 'project' && cfg.project && cfg.project.length > 0) {
+        return true;
+      }
+      if (mode === 'group' && cfg.group && cfg.group.length > 0) {
+        return true;
+      }
+      if (mode === 'all-assigned') {
+        return true;
+      }
     }
     this._snackService.open({
       type: 'ERROR',
@@ -330,23 +350,45 @@ export class GitlabApiService {
   }
 
   private _projectApiLink(cfg: GitlabCfg, project: string): string {
-    let apiURL: string = '';
+    const projectURL = assertTruthy(project).toString().replace(/\//gi, '%2F');
+    return `${this._baseApiLink(cfg)}/projects/${projectURL}`;
+  }
 
+  /**
+   * Endpoint (without query string) that lists issues for the configured
+   * source mode:
+   *   project      → /projects/:id/issues
+   *   group        → /groups/:id/issues  (include_subgroups added by callers via getExtraListParams)
+   *   all-assigned → /issues             (scope forced to assigned_to_me via getScopeParam)
+   */
+  private _listIssuesApiLink(cfg: GitlabCfg): string {
+    const mode = this._getSourceMode(cfg);
+    const base = this._baseApiLink(cfg);
+    if (mode === 'group') {
+      const groupURL = assertTruthy(cfg.group).toString().replace(/\//gi, '%2F');
+      return `${base}/groups/${groupURL}/issues`;
+    }
+    if (mode === 'all-assigned') {
+      return `${base}/issues`;
+    }
+    const projectURL = assertTruthy(cfg.project).toString().replace(/\//gi, '%2F');
+    return `${base}/projects/${projectURL}/issues`;
+  }
+
+  private getExtraListParams(cfg: GitlabCfg): string {
+    // include_subgroups so a group config surfaces issues nested arbitrarily
+    // deep — the primary use case for group scans is an org with many
+    // subgroups (see issue #2). The param is a no-op for other endpoints.
+    return this._getSourceMode(cfg) === 'group' ? '&include_subgroups=true' : '';
+  }
+
+  private _baseApiLink(cfg: GitlabCfg): string {
     if (cfg.gitlabBaseUrl) {
       const fixedUrl = cfg.gitlabBaseUrl.match(/.*\/$/)
         ? cfg.gitlabBaseUrl
         : `${cfg.gitlabBaseUrl}/`;
-      apiURL = fixedUrl + 'api/v4/';
-    } else {
-      apiURL = GITLAB_API_BASE_URL + '/';
+      return `${fixedUrl}api/v4`;
     }
-
-    const projectURL = assertTruthy(project).toString().replace(/\//gi, '%2F');
-    apiURL += 'projects/' + projectURL;
-    return apiURL;
-  }
-
-  private _apiLink(cfg: GitlabCfg): string {
-    return this._projectApiLink(cfg, assertTruthy(cfg.project));
+    return GITLAB_API_BASE_URL;
   }
 }

@@ -102,7 +102,8 @@
     "ANDROID": {
       "FOREGROUND_SERVICE_START_FAILED_FOCUS": "Android blocked the persistent focus mode notification. The timer continues in the app, but background alerts may be unavailable. Check notification permission and battery/background restrictions.",
       "FOREGROUND_SERVICE_START_FAILED_TRACKING": "Android blocked the persistent time tracking notification. Time is still tracked in the app, but background recovery may be unavailable. Check notification permission and battery/background restrictions.",
-      "OPEN_NOTIFICATION_SETTINGS": "Open settings"
+      "OPEN_NOTIFICATION_SETTINGS": "Open settings",
+      "WIDGET_TASKS_UPDATED": "{{count}} task(s) updated from widget"
     },
     "ATTACHMENT": {
       "LOCAL_FILE_UNAVAILABLE": "This attachment is only available on the device where it was added.",
@@ -431,6 +432,8 @@
         "FILTER_DESCRIPTION": "See https://docs.gitlab.com/ee/api/issues.html#list-issues. Multiple can be combined with &",
         "FILTER_USER": "Filter username",
         "GITLAB_BASE_URL": "Custom GitLab base URL (optional)",
+        "GROUP": "group path/ID",
+        "GROUP_HINT": "Group path (e.g. my-org or my-org/sub-group) or numeric group ID. Issues from all projects under this group (including subgroups) will be listed.",
         "POLL_INTERVAL_MINUTES": "Poll interval (minutes)",
         "PROJECT": "user name/project",
         "PROJECT_HINT": "Project path (namespace/project-slug) or numeric project ID, not the display name (e.g. super-productivity/super-productivity or 12345)",
@@ -441,6 +444,11 @@
         "SOURCE": "Source",
         "SOURCE_GLOBAL": "All",
         "SOURCE_GROUP": "Group",
+        "SOURCE_MODE": "Scan mode",
+        "SOURCE_MODE_ALL_ASSIGNED": "All issues assigned to me (entire instance)",
+        "SOURCE_MODE_GROUP": "Group (all projects in a group)",
+        "SOURCE_MODE_HINT": "Pick a single project, an entire group (recurses through subgroups) or every issue assigned to you across the GitLab instance.",
+        "SOURCE_MODE_PROJECT": "Single project",
         "SOURCE_PROJECT": "Project",
         "SUBMIT_TIMELOGS": "Submit timelogs to GitLab",
         "SUBMIT_TIMELOGS_DESCRIPTION": "Show time tracking dialog after clicking on \"Finish Day\"",
@@ -1844,6 +1852,7 @@
         "SCHEDULED_FOR": "Scheduled for",
         "SNOOZE": "Snooze",
         "SNOOZE_FOR": "Snooze {{m}}m",
+        "SNOOZE_FOR_SHORT": "{{m}}m",
         "START": "Start",
         "TASK_REMINDERS": "Task Reminders",
         "UNSCHEDULE": "Unschedule",

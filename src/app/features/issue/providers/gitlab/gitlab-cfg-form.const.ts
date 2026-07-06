@@ -18,17 +18,63 @@ import {
 // single unnested quantifier (no catastrophic backtracking).
 export const GITLAB_PROJECT_REGEX = /^(?:[1-9][0-9]*|(?=.*(?:\/|%2F))[\w.%/-]+)$/i;
 
+// A GitLab group reference is a numeric ID OR a path segment. Unlike projects,
+// a top-level group like `my-org` is a valid reference (that's the whole point
+// of group-scan mode for enterprise users with one root namespace), so we do
+// NOT require a slash separator here.
+export const GITLAB_GROUP_REGEX = /^(?:[1-9][0-9]*|[\w.%/-]+)$/i;
+
+// Source-mode helpers referenced by hide/require expressions.
+const isProjectMode = (model: { sourceMode?: string }): boolean =>
+  !model.sourceMode || model.sourceMode === 'project';
+const isGroupMode = (model: { sourceMode?: string }): boolean =>
+  model.sourceMode === 'group';
+
 export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[] = [
   ...CROSS_ORIGIN_WARNING,
   {
-    key: 'project',
-    type: 'input',
+    key: 'sourceMode',
+    type: 'select',
+    defaultValue: 'project',
     templateOptions: {
       required: true,
+      label: T.F.GITLAB.FORM.SOURCE_MODE,
+      description: T.F.GITLAB.FORM.SOURCE_MODE_HINT,
+      options: [
+        { value: 'project', label: T.F.GITLAB.FORM.SOURCE_MODE_PROJECT },
+        { value: 'group', label: T.F.GITLAB.FORM.SOURCE_MODE_GROUP },
+        { value: 'all-assigned', label: T.F.GITLAB.FORM.SOURCE_MODE_ALL_ASSIGNED },
+      ],
+    },
+  },
+  {
+    key: 'project',
+    type: 'input',
+    hideExpression: (model: any) => !isProjectMode(model),
+    templateOptions: {
       label: T.F.GITLAB.FORM.PROJECT,
       type: 'text',
       pattern: GITLAB_PROJECT_REGEX,
       description: T.F.GITLAB.FORM.PROJECT_HINT,
+    },
+    expressionProperties: {
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      'templateOptions.required': (model: any) => isProjectMode(model),
+    },
+  },
+  {
+    key: 'group',
+    type: 'input',
+    hideExpression: (model: any) => !isGroupMode(model),
+    templateOptions: {
+      label: T.F.GITLAB.FORM.GROUP,
+      type: 'text',
+      pattern: GITLAB_GROUP_REGEX,
+      description: T.F.GITLAB.FORM.GROUP_HINT,
+    },
+    expressionProperties: {
+      // eslint-disable-next-line @typescript-eslint/naming-convention
+      'templateOptions.required': (model: any) => isGroupMode(model),
     },
   },
   {
@@ -42,11 +88,13 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
       show: true,
     },
     expressionProperties: {
-      // !! is used to get the associated boolean value of a non boolean value
-      // It's not a fancy trick using model.project alone gets the required case right but won't remove it
-      // if the project field is empty so this is needed for the wanted behavior
+      // Token required whenever the config has enough source info to actually
+      // poll — mirrors the old `!!model.project` behavior across all three
+      // source modes. Empty config keeps the field optional so the initial
+      // paint doesn't show a red "required" error.
       // eslint-disable-next-line @typescript-eslint/naming-convention
-      'templateOptions.required': '!!model.project',
+      'templateOptions.required': (model: any) =>
+        !!model.project || !!model.group || model.sourceMode === 'all-assigned',
     },
   },
   {
@@ -56,21 +104,6 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
       txt: T.F.ISSUE.HOW_TO_GET_A_TOKEN,
     },
   },
-  // TODO remove completely including translations
-  // {
-  //   key: 'source',
-  //   type: 'select',
-  //   defaultValue: 'project',
-  //   templateOptions: {
-  //     required: true,
-  //     label: T.F.GITLAB.FORM.SOURCE,
-  //     options: [
-  //       { value: 'project', label: T.F.GITLAB.FORM.SOURCE_PROJECT },
-  //       { value: 'group', label: T.F.GITLAB.FORM.SOURCE_GROUP },
-  //       { value: 'global', label: T.F.GITLAB.FORM.SOURCE_GLOBAL },
-  //     ],
-  //   },
-  // },
   {
     type: 'collapsible',
     // todo translate
@@ -80,6 +113,10 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
         key: 'scope',
         type: 'select',
         defaultValue: 'created-by-me',
+        // Only project/group listings honour the scope param — in all-assigned
+        // mode the API service forces scope=assigned_to_me, so the field is
+        // meaningless.
+        hideExpression: (model: any) => model.sourceMode === 'all-assigned',
         templateOptions: {
           required: true,
           label: T.F.GITLAB.FORM.SCOPE,
