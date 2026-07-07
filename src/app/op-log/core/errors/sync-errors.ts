@@ -74,6 +74,13 @@ export class LocalDataConflictError extends Error {
     public readonly unsyncedCount: number,
     public readonly remoteSnapshotState: Record<string, unknown>,
     public readonly remoteVectorClock?: Record<string, number>,
+    // The client's vector clock as of its last successful sync. Used by the
+    // conflict dialog as an APPROXIMATE baseline for the per-client
+    // changes-since-last-sync delta. Note: compaction can fold still-unsynced ops
+    // into this clock, so the delta can under-count actual local changes — it is a
+    // display heuristic, not an exact "unsynced" figure. `null` for genuinely-fresh
+    // clients that have never synced (SPAP-7).
+    public readonly lastSyncedVectorClock?: Record<string, number> | null,
   ) {
     super(`Local data conflict: ${unsyncedCount} unsynced changes would be lost`);
   }
@@ -108,6 +115,17 @@ export class UnknownSyncStateError extends Error {
 // -----ENCRYPTION & COMPRESSION----
 export class DecryptNoPasswordError extends AdditionalLogErrorBase {
   override name = 'DecryptNoPasswordError';
+}
+
+/**
+ * Encryption is expected (isEncrypt=true) but no key is available at upload
+ * time — the dropped-credential signature (GHSA-9544-hjjr-fg8h). Uploading
+ * plaintext instead would silently break the E2EE promise, so the upload path
+ * throws this to trigger the enter-password recovery dialog.
+ * NEVER attach the payload that was about to be encrypted (user content).
+ */
+export class EncryptNoPasswordError extends AdditionalLogErrorBase {
+  override name = 'EncryptNoPasswordError';
 }
 
 export class DecryptError extends AdditionalLogErrorBase {
