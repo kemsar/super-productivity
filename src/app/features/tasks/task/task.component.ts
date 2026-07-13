@@ -1116,15 +1116,25 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
   }
 
   titleBarClick(event: MouseEvent): void {
-    const targetEl = event.target as HTMLElement;
-    if (targetEl.closest('task-title')) {
-      return;
-    }
-    if (isTouchActive() && this.task().title.length) {
+    // Click anywhere on the title bar — including the title itself — opens the
+    // detail panel (issue #13). The task-title component only enters edit mode
+    // when a caller opts in via [clickToEdit]="true"; here we opted out on the
+    // template side and let the click bubble up to this handler, which then
+    // toggles the panel. Editing happens via the pencil hover button.
+    if (this.task().title.length) {
       this.toggleShowDetailPanel(event);
     } else {
       this.focusSelf();
     }
+  }
+
+  /**
+   * Enters inline title-edit mode. Triggered by the pencil button surfaced
+   * in `<task-hover-controls>` — see issue #13. The old default (click title
+   * → edit) is deliberately no longer wired.
+   */
+  startTitleEdit(): void {
+    this.taskTitleEditEl()?.focusInput();
   }
 
   focusPrevious(isFocusReverseIfNotPossible: boolean = false): void {

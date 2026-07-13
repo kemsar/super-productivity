@@ -1838,6 +1838,7 @@
         "DUPLICATE": "Duplicate",
         "EDIT_DEADLINE": "Edit deadline",
         "EDIT_SCHEDULED": "Reschedule",
+        "EDIT_TITLE": "Edit title",
         "ESTIMATE": "Estimate",
         "FOCUS_SESSION": "Start focus session",
         "MARK_DONE": "Mark as completed",
