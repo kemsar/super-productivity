@@ -1,6 +1,6 @@
 {
   "name": "superProductivity",
-  "version": "18.13.1",
+  "version": "18.14.0",
   "description": "ToDo list and Time Tracking",
   "keywords": [
     "ToDo",
@@ -361,7 +361,9 @@
       "owner": "johannesjo"
     }
   ],
+  "packageManager": "npm@11.18.0",
   "volta": {
-    "node": "22.18.0"
+    "node": "22.18.0",
+    "npm": "11.18.0"
   }
 }

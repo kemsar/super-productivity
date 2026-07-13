@@ -45,7 +45,7 @@ android/.idea
 # misc
 \\backups
 /backups
-/.angular/cache
+/.angular
 /.sass-cache
 /connect.lock
 /coverage
@@ -97,7 +97,7 @@ electron-builder.win-store.yaml
 ./src/environments/versions.ts
 /src/environments/environment.js
 /src/environments/environment.js.map
-/.claude/
+/.claude/*
 .aider*
 
 

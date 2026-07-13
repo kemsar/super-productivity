@@ -30,10 +30,10 @@ import {
   setCurrentTask,
   setSelectedTask,
   toggleStart,
-  toggleTaskHideSubTasks,
   unsetCurrentTask,
   updateTaskUi,
 } from './store/task.actions';
+import { getNextHideSubTasksMode } from './util/get-next-hide-sub-tasks-mode';
 import { IssueProviderKey } from '../issue/issue.model';
 import { GlobalTrackingIntervalService } from '../../core/global-tracking-interval/global-tracking-interval.service';
 import { BatchedTimeSyncAccumulator } from '../../core/util/batched-time-sync-accumulator';
@@ -52,7 +52,7 @@ import {
   selectTaskDetailTargetPanel,
   selectTaskEntities,
   selectTaskFeatureState,
-  selectTasksById,
+  selectTasksByIdFactory,
   selectTasksByRepeatConfigId,
   selectTasksByTag,
   selectTaskWithSubTasksByRepeatConfigId,
@@ -123,6 +123,7 @@ export class TaskService {
   private readonly _taskFocusService = inject(TaskFocusService);
   private readonly _deletedTaskIssueSidecar = inject(DeletedTaskIssueSidecarService);
   private readonly _timeBlockDeleteSidecar = inject(TimeBlockDeleteSidecarService);
+  private readonly _archiveTaskPromisesById = new Map<string, Promise<void>>();
 
   currentTaskId$: Observable<string | null> = this._store.pipe(
     select(selectCurrentTaskId),
@@ -398,6 +399,11 @@ export class TaskService {
     isAddToBacklog: boolean = false,
     additional: Partial<Task> = {},
     isAddToBottom: boolean = false,
+    // Set for tasks built from untrusted/external content (e.g. an imported
+    // email subject) so the ShortSyntaxEffects don't parse #tag/@date/+project
+    // tokens out of the title. Only spread when true to keep the dispatched
+    // action byte-identical for all existing callers.
+    isIgnoreShortSyntax: boolean = false,
   ): string {
     const workContextId = this._workContextService.activeWorkContextId as string;
     const workContextType = this._workContextService
@@ -418,6 +424,7 @@ export class TaskService {
         workContextType,
         isAddToBacklog,
         isAddToBottom,
+        ...(isIgnoreShortSyntax ? { isIgnoreShortSyntax: true } : {}),
         ...getDeadlineAutoPlanFields(
           this._dateService,
           task.deadlineDay,
@@ -452,6 +459,24 @@ export class TaskService {
         taskIds: [task.id],
         today: this._dateService.todayStr(),
         startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+      }),
+    );
+  }
+
+  /**
+   * Schedules a task for today by id (same effect as the "Add to My Day"
+   * button / Schedule → Today). Used by the id-based schedule-today shortcut
+   * path so it works from views without a live `<task>` component (e.g. the
+   * Planner overdue list, which renders `<planner-task>`). (#8851)
+   */
+  scheduleForTodayById(taskId: string): void {
+    const task = this._taskEntities()[taskId];
+    this._store.dispatch(
+      TaskSharedActions.planTasksForToday({
+        taskIds: [taskId],
+        today: this._dateService.todayStr(),
+        startOfNextDayDiffMs: this._dateService.getStartOfNextDayDiffMs(),
+        parentTaskMap: task ? { [taskId]: task.parentId } : undefined,
       }),
     );
   }
@@ -941,15 +966,60 @@ export class TaskService {
       }
     }
 
-    if (parentTasks.length) {
-      TaskLog.log('[TaskService] Dispatching moveToArchive action for parent tasks');
+    const parentTasksToArchive: TaskWithSubTasks[] = [];
+    const reservedTaskIds = new Set<string>();
+    const existingArchivePromises = new Set<Promise<void>>();
+    for (const task of parentTasks) {
+      if (task.id) {
+        const existingArchivePromise = this._archiveTaskPromisesById.get(task.id);
+        if (existingArchivePromise) {
+          TaskLog.log('[TaskService] Archive already in progress', { id: task.id });
+          existingArchivePromises.add(existingArchivePromise);
+          continue;
+        }
+        if (reservedTaskIds.has(task.id)) {
+          continue;
+        }
+        reservedTaskIds.add(task.id);
+      }
+      parentTasksToArchive.push(task);
+    }
+
+    if (parentTasksToArchive.length) {
       // Only move parent tasks to archive, never subtasks
       // Note: Full task payload required for sync - see docs/archive-operation-redesign.md
-      this._store.dispatch(TaskSharedActions.moveToArchive({ tasks: parentTasks }));
-      // Only archive parent tasks to prevent orphaned subtasks
-      TaskLog.log('[TaskService] Calling archive service to persist tasks');
-      await this._archiveService.moveTasksToArchiveAndFlushArchiveIfDue(parentTasks);
-      TaskLog.log('[TaskService] Archive operation completed successfully');
+      // Persist first: dispatch removes the tasks from NgRx and makes the captured
+      // operation eligible for a full-state snapshot. If archive persistence were
+      // still in flight, that snapshot could acknowledge the operation while
+      // omitting its archived task data.
+      const archivePromise = (async (): Promise<void> => {
+        TaskLog.log('[TaskService] Calling archive service to persist tasks');
+        await this._archiveService.moveTasksToArchiveAndFlushArchiveIfDue(
+          parentTasksToArchive,
+        );
+        TaskLog.log('[TaskService] Dispatching moveToArchive action for parent tasks');
+        this._store.dispatch(
+          TaskSharedActions.moveToArchive({ tasks: parentTasksToArchive }),
+        );
+        TaskLog.log('[TaskService] Archive operation completed successfully');
+      })();
+      for (const taskId of reservedTaskIds) {
+        this._archiveTaskPromisesById.set(taskId, archivePromise);
+      }
+
+      try {
+        await Promise.all([...existingArchivePromises, archivePromise]);
+      } finally {
+        for (const taskId of reservedTaskIds) {
+          if (this._archiveTaskPromisesById.get(taskId) === archivePromise) {
+            this._archiveTaskPromisesById.delete(taskId);
+          }
+        }
+      }
+    } else if (existingArchivePromises.size > 0) {
+      // A duplicate caller observes the same success/failure and does not return
+      // before the durable archive write plus NgRx removal have completed.
+      await Promise.all(existingArchivePromises);
     } else {
       TaskLog.log('[TaskService] No parent tasks to archive');
     }
@@ -1085,7 +1155,9 @@ export class TaskService {
   }
 
   getByIdsLive$(ids: string[]): Observable<Task[]> {
-    return this._store.pipe(select(selectTasksById, { ids }));
+    // SPAP-19: fresh per-call factory selector so concurrent subscribers with
+    // different id-sets don't evict each other's memo.
+    return this._store.pipe(select(selectTasksByIdFactory(ids)));
   }
 
   getByIdWithSubTaskData$(id: string): Observable<TaskWithSubTasks> {
@@ -1154,7 +1226,28 @@ export class TaskService {
     isShowLess: boolean = true,
     isEndless: boolean = false,
   ): void {
-    this._store.dispatch(toggleTaskHideSubTasks({ taskId, isShowLess, isEndless }));
+    const entities = this._taskEntities();
+    const task = entities[taskId];
+    if (!task) {
+      return;
+    }
+    const subTasks = task.subTaskIds
+      .map((id) => entities[id])
+      .filter((t): t is Task => !!t);
+    const doneCount = subTasks.filter((t) => t.isDone).length;
+    // Persist the resolved absolute value via updateTaskUi (replay-safe) rather
+    // than a relative toggle command, so the collapse state survives a restart.
+    // Replaying a relative command would recompute from live state and diverge
+    // across devices. See issue #8781.
+    this.updateUi(taskId, {
+      _hideSubTasksMode: getNextHideSubTasksMode(
+        task._hideSubTasksMode,
+        doneCount,
+        subTasks.length,
+        isShowLess,
+        isEndless,
+      ),
+    });
   }
 
   hideSubTasks(id: string): void {

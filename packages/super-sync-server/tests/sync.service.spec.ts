@@ -79,6 +79,23 @@ vi.mock('../src/db', async () => {
             }
           }
         }
+        if (args.where?.entityType && Array.isArray(args.where?.OR)) {
+          const targetEntityId =
+            args.where.OR.find((condition: any) => condition.entityId !== undefined)
+              ?.entityId ??
+            args.where.OR.find((condition: any) => condition.entityIds?.has !== undefined)
+              ?.entityIds.has;
+          const ops = Array.from(state.operations.values())
+            .filter(
+              (op: any) =>
+                op.userId === args.where.userId &&
+                op.entityType === args.where.entityType &&
+                (op.entityId === targetEntityId ||
+                  op.entityIds?.includes(targetEntityId)),
+            )
+            .sort((a: any, b: any) => b.serverSeq - a.serverSeq);
+          return applyOperationSelect(ops[0], args.select) || null;
+        }
         if (args.where?.entityId && args.where?.entityType) {
           const ops = Array.from(state.operations.values())
             .filter(
@@ -111,6 +128,11 @@ vi.mock('../src/db', async () => {
               op.serverSeq > args.where.serverSeq.lte
             )
               return false;
+            if (
+              args.where?.serverSeq?.lt !== undefined &&
+              op.serverSeq >= args.where.serverSeq.lt
+            )
+              return false;
             if (args.where?.clientId?.not && op.clientId === args.where.clientId.not)
               return false;
             if (args.where?.opType?.in && !args.where.opType.in.includes(op.opType))
@@ -140,6 +162,8 @@ vi.mock('../src/db', async () => {
         for (const [id, op] of state.operations) {
           let shouldDelete = true;
           if (args.where?.userId !== undefined && op.userId !== args.where.userId)
+            shouldDelete = false;
+          if (args.where?.id?.in && !args.where.id.in.includes(op.id))
             shouldDelete = false;
           if (
             args.where?.receivedAt?.lt !== undefined &&
@@ -359,6 +383,7 @@ vi.mock('../src/db', async () => {
           entityId: op.entityId,
           clientId: op.clientId,
           vectorClock: op.vectorClock,
+          serverSeq: op.serverSeq,
         }));
       }
       if (sql.includes('jsonb_each_text(vector_clock)')) {
@@ -424,6 +449,11 @@ vi.mock('../src/db', async () => {
               if (
                 args.where?.serverSeq?.lte !== undefined &&
                 op.serverSeq > args.where.serverSeq.lte
+              )
+                return false;
+              if (
+                args.where?.serverSeq?.lt !== undefined &&
+                op.serverSeq >= args.where.serverSeq.lt
               )
                 return false;
               if (
@@ -605,6 +635,8 @@ import { DeviceService } from '../src/sync/services/device.service';
 import { OperationDownloadService } from '../src/sync/services/operation-download.service';
 import { Operation, DEFAULT_SYNC_CONFIG, SYNC_ERROR_CODES } from '../src/sync/sync.types';
 import { prisma } from '../src/db';
+import { Logger } from '../src/logger';
+import { CURRENT_SCHEMA_VERSION } from '@sp/shared-schema';
 
 describe('SyncService', () => {
   const userId = 1;
@@ -627,6 +659,19 @@ describe('SyncService', () => {
     schemaVersion: 1,
     ...overrides,
   });
+
+  const makeGlobalConfigOp = (overrides: Partial<Operation> = {}): Operation =>
+    makeOp({
+      actionType: '[GLOBAL_CONFIG] Update section',
+      opType: 'UPD',
+      entityType: 'GLOBAL_CONFIG',
+      entityId: 'misc',
+      payload: {
+        sectionKey: 'misc',
+        sectionCfg: { defaultProjectId: 'project-1' },
+      },
+      ...overrides,
+    });
 
   beforeEach(() => {
     // Reset all test data stores
@@ -651,6 +696,48 @@ describe('SyncService', () => {
   afterEach(() => {
     delete process.env.OLD_OPS_CLEANUP_DELETE_BATCH_SIZE;
     delete process.env.OLD_OPS_CLEANUP_MAX_DELETED_PER_RUN;
+  });
+
+  describe('filterValidOpsForQuota', () => {
+    it('excludes invalid schema and oversized payload siblings from quota sizing', () => {
+      const service = new SyncService({ maxPayloadSizeBytes: 100 });
+      const validOp = makeOp({
+        id: 'valid-op',
+        payload: { title: 'Fits quota' },
+      });
+      const invalidSchemaOp = makeOp({
+        id: 'invalid-schema-op',
+        schemaVersion: 101,
+      });
+      const oversizedInvalidOp = makeOp({
+        id: 'oversized-invalid-op',
+        payload: { data: 'x'.repeat(200) },
+      });
+
+      const result = service.filterValidOpsForQuota(
+        [validOp, invalidSchemaOp, oversizedInvalidOp],
+        clientId,
+      );
+
+      expect(result).toEqual([validOp]);
+    });
+
+    it('does not charge a later valid sibling when an invalid op reserved its ID', () => {
+      const service = new SyncService();
+      const invalidFirst = makeOp({
+        id: 'reserved-by-invalid-op',
+        entityType: 'INVALID_ENTITY_TYPE',
+      });
+      const laterLargeSibling = makeOp({
+        id: invalidFirst.id,
+        entityId: 'fresh-task',
+        payload: { data: 'x'.repeat(10_000) },
+      });
+
+      expect(
+        service.filterValidOpsForQuota([invalidFirst, laterLargeSibling], clientId),
+      ).toEqual([]);
+    });
   });
 
   describe('uploadOps', () => {
@@ -708,15 +795,39 @@ describe('SyncService', () => {
       expect(testState.operations.size).toBe(25);
     });
 
-    it('rejects an intra-batch same-id op as DUPLICATE_OPERATION even when its content differs (deliberate divergence from the legacy per-op path, which yields INVALID_OP_ID)', async () => {
-      // C4: the batch path dedups intra-batch purely by op.id (plan §1a step 2)
-      // and rejects the later op as DUPLICATE_OPERATION regardless of content.
-      // The legacy per-op path inserts the first then catches the second at the
-      // DB and returns INVALID_OP_ID for differing content. Both are terminal
-      // rejections with no row and no sequence gap, so sync invariants hold;
-      // the client treats DUPLICATE_OPERATION as a silent success and
-      // INVALID_OP_ID as a hard rejection. This test pins the chosen batch
-      // semantics so the divergence stays intentional, not accidental drift.
+    it.each([
+      ['legacy serial', false],
+      ['batch', true],
+    ])(
+      'rejects a request-start occupied ID in the %s path after its row disappears',
+      async (_label, batchUpload) => {
+        const service = new SyncService({ batchUpload });
+        const op = makeOp({
+          id: 'occupied-before-quota-cleanup',
+          entityId: 'new-entity-after-cleanup',
+          payload: { title: 'Must not consume unestimated storage' },
+        });
+
+        const results = await service.uploadOps(
+          userId,
+          clientId,
+          [op],
+          undefined,
+          new Set([op.id]),
+        );
+
+        expect(results).toEqual([
+          expect.objectContaining({
+            opId: op.id,
+            accepted: false,
+            errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+          }),
+        ]);
+        expect(testState.operations.has(op.id)).toBe(false);
+      },
+    );
+
+    it('rejects an intra-batch same-id collision as INVALID_OP_ID', async () => {
       const service = new SyncService({ batchUpload: true });
       const opId = uuidv7();
       const first = makeOp({
@@ -747,13 +858,143 @@ describe('SyncService', () => {
       expect(results[1]).toEqual(
         expect.objectContaining({
           accepted: false,
-          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
         }),
       );
       // No sequence gap: lastSeq advanced by exactly 1, exactly one row.
       expect(testState.userSyncStates.get(userId)?.lastSeq).toBe(1);
       expect(testState.operations.size).toBe(1);
     });
+
+    it('preserves an exact intra-batch retry as DUPLICATE_OPERATION', async () => {
+      const service = new SyncService({ batchUpload: true });
+      const retry = makeOp({
+        id: uuidv7(),
+        entityId: 'task-1',
+        entityIds: ['task-1', 'task-2'],
+        vectorClock: { [clientId]: 1 },
+      });
+
+      const results = await service.uploadOps(userId, clientId, [retry, { ...retry }]);
+
+      expect(results[0]).toEqual(
+        expect.objectContaining({ accepted: true, serverSeq: 1 }),
+      );
+      expect(results[1]).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          errorCode: SYNC_ERROR_CODES.DUPLICATE_OPERATION,
+        }),
+      );
+    });
+
+    it('terminally rejects a later serial same-ID sibling when the first one conflicts', async () => {
+      const service = new SyncService({ batchUpload: false });
+      const otherClientId = 'other-device';
+      const existing = makeOp({
+        id: 'existing-op',
+        clientId: otherClientId,
+        entityId: 'blocked-task',
+        vectorClock: { [otherClientId]: 1 },
+      });
+      expect(
+        (await service.uploadOps(userId, otherClientId, [existing]))[0].accepted,
+      ).toBe(true);
+
+      const repeatedId = 'repeated-request-id';
+      const first = makeOp({
+        id: repeatedId,
+        entityId: 'blocked-task',
+        payload: { title: 'small' },
+        vectorClock: { [clientId]: 1 },
+      });
+      const laterLargeSibling = makeOp({
+        id: repeatedId,
+        entityId: 'fresh-task',
+        payload: { data: 'x'.repeat(10_000) },
+        vectorClock: { [clientId]: 2 },
+        timestamp: first.timestamp + 1,
+      });
+
+      const results = await service.uploadOps(userId, clientId, [
+        first,
+        laterLargeSibling,
+      ]);
+
+      expect(results[0]).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
+        }),
+      );
+      expect(results[1]).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+        }),
+      );
+      expect(testState.operations.has(repeatedId)).toBe(false);
+    });
+
+    it('redacts malformed operation metadata from audit logs', async () => {
+      const service = new SyncService({ batchUpload: false });
+      const privateText = 'private task title that must not be logged';
+      const auditSpy = vi.spyOn(Logger, 'audit').mockImplementation(() => undefined);
+      const malformed = makeOp({
+        id: privateText,
+        entityType: privateText,
+      });
+
+      const result = await service.uploadOps(userId, clientId, [malformed]);
+
+      expect(result[0].accepted).toBe(false);
+      const rejection = auditSpy.mock.calls
+        .map(([entry]) => entry)
+        .find((entry) => entry.event === 'OP_REJECTED');
+      expect(rejection).toBeDefined();
+      expect(rejection?.opId).toBe('[invalid]');
+      expect(rejection?.entityType).toBe('[invalid]');
+      expect(rejection?.reason).toBe(SYNC_ERROR_CODES.INVALID_ENTITY_TYPE);
+      expect(JSON.stringify(rejection)).not.toContain(privateText);
+    });
+
+    it.each([
+      ['serial', false],
+      ['batch', true],
+    ])(
+      'terminally rejects a valid %s sibling whose ID was reserved by an invalid op',
+      async (_label, batchUpload) => {
+        const service = new SyncService({ batchUpload });
+        const invalidFirst = makeOp({
+          id: 'invalid-first-shared-id',
+          entityType: 'INVALID_ENTITY_TYPE',
+        });
+        const laterLargeSibling = makeOp({
+          id: invalidFirst.id,
+          entityId: 'fresh-task',
+          payload: { data: 'x'.repeat(10_000) },
+        });
+
+        const results = await service.uploadOps(userId, clientId, [
+          invalidFirst,
+          laterLargeSibling,
+        ]);
+
+        expect(results[0]).toEqual(
+          expect.objectContaining({
+            accepted: false,
+            errorCode: SYNC_ERROR_CODES.INVALID_ENTITY_TYPE,
+          }),
+        );
+        expect(results[1]).toEqual(
+          expect.objectContaining({
+            accepted: false,
+            errorCode: SYNC_ERROR_CODES.INVALID_OP_ID,
+          }),
+        );
+        expect(testState.operations.has(invalidFirst.id)).toBe(false);
+      },
+    );
 
     it('should reject intra-batch entity conflicts in order', async () => {
       const service = new SyncService({ batchUpload: true });
@@ -796,6 +1037,118 @@ describe('SyncService', () => {
       expect(testState.userSyncStates.get(userId)?.lastSeq).toBe(1);
       expect(testState.operations.size).toBe(1);
     });
+
+    it.each([
+      ['serial', false],
+      ['batch', true],
+    ])(
+      'rejects a v2 tasks write against an already-stored raw v1 misc row in the %s path',
+      async (_label, batchUpload) => {
+        const legacyClientId = 'legacy-client';
+        testState.userSyncStates.set(userId, { userId, lastSeq: 1 });
+        testState.serverSeqCounter = 1;
+        testState.operations.set('stored-legacy-misc', {
+          id: 'stored-legacy-misc',
+          userId,
+          clientId: legacyClientId,
+          serverSeq: 1,
+          actionType: '[GLOBAL_CONFIG] Update section',
+          opType: 'UPD',
+          entityType: 'GLOBAL_CONFIG',
+          entityId: 'misc',
+          entityIds: [],
+          payload: {
+            sectionKey: 'misc',
+            sectionCfg: { defaultProjectId: 'legacy-project' },
+          },
+          payloadBytes: BigInt(10),
+          vectorClock: { [legacyClientId]: 1 },
+          schemaVersion: 1,
+          clientTimestamp: BigInt(Date.now() - 1_000),
+          receivedAt: BigInt(Date.now() - 1_000),
+          isPayloadEncrypted: false,
+          syncImportReason: null,
+        });
+
+        const service = new SyncService({ batchUpload });
+        const result = await service.uploadOps(userId, clientId, [
+          makeGlobalConfigOp({
+            id: 'current-tasks-write',
+            entityId: 'tasks',
+            payload: {
+              sectionKey: 'tasks',
+              sectionCfg: { defaultProjectId: 'current-project' },
+            },
+            vectorClock: { [clientId]: 1 },
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+          }),
+        ]);
+
+        expect(result).toEqual([
+          expect.objectContaining({
+            opId: 'current-tasks-write',
+            accepted: false,
+            errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
+            existingClock: { [legacyClientId]: 1 },
+          }),
+        ]);
+        expect(testState.operations.size).toBe(1);
+      },
+    );
+
+    it.each([
+      ['serial', false],
+      ['batch', true],
+    ])(
+      'atomically rejects a new mixed v1 misc upload that conflicts with v2 tasks in the %s path',
+      async (_label, batchUpload) => {
+        const currentClientId = 'current-client';
+        const service = new SyncService({ batchUpload });
+        const currentResult = await service.uploadOps(userId, currentClientId, [
+          makeGlobalConfigOp({
+            id: 'existing-current-tasks',
+            clientId: currentClientId,
+            entityId: 'tasks',
+            payload: {
+              sectionKey: 'tasks',
+              sectionCfg: { defaultProjectId: 'current-project' },
+            },
+            vectorClock: { [currentClientId]: 1 },
+            schemaVersion: CURRENT_SCHEMA_VERSION,
+          }),
+        ]);
+        expect(currentResult[0].accepted).toBe(true);
+
+        const sourceId = 'incoming-legacy-mixed';
+        const legacyResult = await service.uploadOps(userId, clientId, [
+          makeGlobalConfigOp({
+            id: sourceId,
+            payload: {
+              sectionKey: 'misc',
+              sectionCfg: {
+                defaultProjectId: 'legacy-project',
+                isMinimizeToTray: true,
+              },
+            },
+            vectorClock: { [clientId]: 1 },
+            schemaVersion: 1,
+          }),
+        ]);
+
+        expect(legacyResult).toEqual([
+          expect.objectContaining({
+            opId: sourceId,
+            accepted: false,
+            errorCode: SYNC_ERROR_CODES.CONFLICT_CONCURRENT,
+            existingClock: { [currentClientId]: 1 },
+          }),
+        ]);
+        expect(testState.operations.has(`${sourceId}_misc`)).toBe(false);
+        expect(testState.operations.has(`${sourceId}_tasks`)).toBe(false);
+        expect(testState.operations.has(sourceId)).toBe(false);
+        expect(testState.operations.size).toBe(1);
+      },
+    );
 
     it('should use entityIds when prefetching batch conflicts', async () => {
       const service = new SyncService({ batchUpload: true });
@@ -1276,7 +1629,7 @@ describe('SyncService', () => {
       }
     });
 
-    it('should reject operations that are too old', async () => {
+    it('should accept operations created before the server retention window', async () => {
       const service = getSyncService();
       const tooOld = Date.now() - DEFAULT_SYNC_CONFIG.retentionMs - 10000;
 
@@ -1295,8 +1648,8 @@ describe('SyncService', () => {
 
       const results = await service.uploadOps(userId, clientId, [op]);
 
-      expect(results[0].accepted).toBe(false);
-      expect(results[0].error).toBe('Operation too old');
+      expect(results[0].accepted).toBe(true);
+      expect(testState.operations.get(op.id)?.clientTimestamp).toBe(BigInt(tooOld));
     });
 
     it('should reject operations with payload exceeding size limit', async () => {
@@ -1990,8 +2343,34 @@ describe('SyncService', () => {
   });
 
   describe('cleanup', () => {
-    it('should delete old operations (time-based)', async () => {
+    const seedFullStateOp = (
+      targetUserId: number,
+      serverSeq: number,
+      receivedAt: bigint,
+    ): void => {
+      testState.operations.set(`full-state-${targetUserId}-${serverSeq}`, {
+        id: `full-state-${targetUserId}-${serverSeq}`,
+        userId: targetUserId,
+        clientId: `client-${targetUserId}`,
+        serverSeq,
+        actionType: 'LOAD_ALL_DATA',
+        opType: 'SYNC_IMPORT',
+        entityType: 'ALL',
+        entityId: null,
+        entityIds: [],
+        payload: { appDataComplete: { TASK: {} } },
+        vectorClock: {},
+        schemaVersion: 1,
+        clientTimestamp: BigInt(Date.now()),
+        receivedAt,
+        isPayloadEncrypted: false,
+        syncImportReason: null,
+      });
+    };
+
+    it('should not delete old operations when no full-state base exists', async () => {
       const service = getSyncService();
+      const warnSpy = vi.spyOn(Logger, 'warn').mockImplementation(() => undefined);
 
       // Upload operations
       for (let i = 1; i <= 5; i++) {
@@ -2028,15 +2407,67 @@ describe('SyncService', () => {
         snapshotAt: BigInt(Date.now()), // Snapshot taken recently (>= cutoffTime)
       });
 
-      const { totalDeleted, affectedUserIds } =
-        await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
+      try {
+        const { totalDeleted, affectedUserIds } =
+          await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
 
-      expect(totalDeleted).toBe(2);
-      expect(affectedUserIds).toContain(userId);
+        expect(totalDeleted).toBe(0);
+        expect(affectedUserIds).not.toContain(userId);
+        expect(warnSpy).toHaveBeenCalledWith(
+          'Cleanup [old-ops]: skipped 1 eligible user(s) without a full-state replay base; their operation histories were left intact.',
+        );
 
-      const remaining = (await operationDownloadService.getOpsSinceWithSeq(userId, 0))
-        .ops;
-      expect(remaining).toHaveLength(3);
+        const remaining = (await operationDownloadService.getOpsSinceWithSeq(userId, 0))
+          .ops;
+        expect(remaining).toHaveLength(5);
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('should preserve the latest full-state operation and its replay tail', async () => {
+      const service = getSyncService();
+      const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
+
+      for (let i = 1; i <= 5; i++) {
+        const isFullState = i === 2 || i === 4;
+        testState.operations.set(`old-op-${i}`, {
+          id: `old-op-${i}`,
+          userId,
+          clientId,
+          serverSeq: i,
+          actionType: isFullState ? 'LOAD_ALL_DATA' : 'ADD',
+          opType: i === 2 ? 'BACKUP_IMPORT' : i === 4 ? 'REPAIR' : 'CRT',
+          entityType: isFullState ? 'ALL' : 'TASK',
+          entityId: isFullState ? null : `t${i}`,
+          entityIds: [],
+          payload: isFullState ? { appDataComplete: { TASK: {} } } : {},
+          vectorClock: {},
+          schemaVersion: 1,
+          clientTimestamp: BigInt(Date.now()),
+          receivedAt: BigInt(cutoffTime - 1),
+          isPayloadEncrypted: false,
+          syncImportReason: null,
+        });
+      }
+
+      testState.userSyncStates.set(userId, {
+        userId,
+        lastSeq: 5,
+        lastSnapshotSeq: 4,
+        snapshotAt: BigInt(Date.now()),
+        latestFullStateSeq: 4,
+      });
+
+      const { totalDeleted } = await service.deleteOldSyncedOpsForAllUsers(cutoffTime);
+
+      expect(totalDeleted).toBe(3);
+      expect(prisma.operation.findFirst).not.toHaveBeenCalled();
+      expect(Array.from(testState.operations.keys())).toEqual(['old-op-4', 'old-op-5']);
+      const freshClientOps = (
+        await operationDownloadService.getOpsSinceWithSeq(userId, 0)
+      ).ops;
+      expect(freshClientOps.map((op) => op.serverSeq)).toEqual([4, 5]);
     });
 
     it('drains a single user up to the per-run budget', async () => {
@@ -2065,11 +2496,12 @@ describe('SyncService', () => {
           syncImportReason: null,
         });
       }
+      seedFullStateOp(userId, totalOps + 1, BigInt(cutoffTime - 1));
 
       testState.userSyncStates.set(userId, {
         userId,
-        lastSeq: totalOps,
-        lastSnapshotSeq: totalOps,
+        lastSeq: totalOps + 1,
+        lastSnapshotSeq: totalOps + 1,
         snapshotAt: BigInt(Date.now()),
       });
 
@@ -2082,7 +2514,7 @@ describe('SyncService', () => {
       // deleting until the budget hits zero, not just one batch.
       expect(totalDeleted).toBe(250);
       expect(affectedUserIds).toEqual([userId]);
-      expect(testState.operations.size).toBe(5);
+      expect(testState.operations.size).toBe(6);
     });
 
     it('marks user for reconcile when a later batch throws mid-loop', async () => {
@@ -2111,11 +2543,12 @@ describe('SyncService', () => {
           syncImportReason: null,
         });
       }
+      seedFullStateOp(userId, totalOps + 1, BigInt(cutoffTime - 1));
 
       testState.userSyncStates.set(userId, {
         userId,
-        lastSeq: totalOps,
-        lastSnapshotSeq: totalOps,
+        lastSeq: totalOps + 1,
+        lastSnapshotSeq: totalOps + 1,
         snapshotAt: BigInt(Date.now()),
       });
 
@@ -2149,7 +2582,7 @@ describe('SyncService', () => {
       // First batch committed deletes; the user must still be marked so
       // the next request reconciles the now-stale-high counter.
       expect(storageQuotaService.needsReconcile(userId)).toBe(true);
-      expect(testState.operations.size).toBe(totalOps - 50);
+      expect(testState.operations.size).toBe(totalOps + 1 - 50);
     });
 
     it('shares the per-run budget across users; tail users wait for next pass', async () => {
@@ -2188,20 +2621,21 @@ describe('SyncService', () => {
             syncImportReason: null,
           });
         }
+        seedFullStateOp(uid, opsPerUser + 1, BigInt(cutoffTime - 1));
       }
 
       // userSyncStates are processed by `orderBy: snapshotAt asc`, so the
       // stalest snapshot wins the budget first. user1 here is staler.
       testState.userSyncStates.set(userId, {
         userId,
-        lastSeq: opsPerUser,
-        lastSnapshotSeq: opsPerUser,
+        lastSeq: opsPerUser + 1,
+        lastSnapshotSeq: opsPerUser + 1,
         snapshotAt: BigInt(Date.now() - 1000),
       });
       testState.userSyncStates.set(user2Id, {
         userId: user2Id,
-        lastSeq: opsPerUser,
-        lastSnapshotSeq: opsPerUser,
+        lastSeq: opsPerUser + 1,
+        lastSnapshotSeq: opsPerUser + 1,
         snapshotAt: BigInt(Date.now()),
       });
 
@@ -2213,7 +2647,7 @@ describe('SyncService', () => {
       // user1 drains fully, user2 only gets the remaining budget.
       expect(totalDeleted).toBe(250);
       expect(affectedUserIds).toEqual([userId, user2Id]);
-      expect(testState.operations.size).toBe(150);
+      expect(testState.operations.size).toBe(152);
     });
 
     it('should delete old operations from all users', async () => {
@@ -2267,16 +2701,18 @@ describe('SyncService', () => {
 
       // Set up userSyncState with required fields for both users
       const cutoffTime = Date.now() - 50 * 24 * 60 * 60 * 1000;
+      seedFullStateOp(userId, 2, BigInt(cutoffTime - 1));
+      seedFullStateOp(user2Id, 3, BigInt(cutoffTime - 1));
       testState.userSyncStates.set(userId, {
         userId,
-        lastSeq: 1,
-        lastSnapshotSeq: 1,
+        lastSeq: 2,
+        lastSnapshotSeq: 2,
         snapshotAt: BigInt(Date.now()),
       });
       testState.userSyncStates.set(user2Id, {
         userId: user2Id,
-        lastSeq: 2,
-        lastSnapshotSeq: 2,
+        lastSeq: 3,
+        lastSnapshotSeq: 3,
         snapshotAt: BigInt(Date.now()),
       });
 
@@ -2291,10 +2727,10 @@ describe('SyncService', () => {
 
       expect(
         (await operationDownloadService.getOpsSinceWithSeq(userId, 0)).ops.length,
-      ).toBe(0);
+      ).toBe(1);
       expect(
         (await operationDownloadService.getOpsSinceWithSeq(user2Id, 0)).ops.length,
-      ).toBe(0);
+      ).toBe(1);
     });
 
     it('should delete stale devices', async () => {

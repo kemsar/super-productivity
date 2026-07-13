@@ -184,6 +184,7 @@ export interface DuplicateOperationCandidate {
   opType: string;
   entityType: string;
   entityId: string | null;
+  entityIds: string[];
   payload: unknown;
   vectorClock: unknown;
   schemaVersion: number;
@@ -207,6 +208,7 @@ export const DUPLICATE_OP_SELECT = {
   opType: true,
   entityType: true,
   entityId: true,
+  entityIds: true,
   payload: true,
   vectorClock: true,
   schemaVersion: true,
@@ -220,6 +222,7 @@ export interface LatestEntityOperationRow {
   entityId: string;
   clientId: string;
   vectorClock: unknown;
+  serverSeq?: number;
 }
 
 export interface LatestBatchEntityOperationRow extends LatestEntityOperationRow {
@@ -425,7 +428,7 @@ export const validatePayload = (
 export interface SyncConfig {
   maxPayloadSizeBytes: number;
   uploadRateLimit: { max: number; windowMs: number };
-  retentionMs: number; // Unified retention period for ops, devices, and validation
+  retentionMs: number; // Unified retention period for stored ops and devices
   maxClockDriftMs: number;
   batchUpload: boolean;
 }
@@ -445,7 +448,7 @@ export const ONLINE_DEVICE_THRESHOLD_MS = 5 * MS_PER_MINUTE; // 5 minutes
 export const DEFAULT_SYNC_CONFIG: SyncConfig = {
   maxPayloadSizeBytes: 20 * 1024 * 1024, // 20MB - needed for large imports
   uploadRateLimit: { max: 100, windowMs: MS_PER_MINUTE },
-  retentionMs: RETENTION_MS, // 45 days - used for ops, devices, and validation
+  retentionMs: RETENTION_MS, // 45 days - used for stored ops and devices
   maxClockDriftMs: MS_PER_MINUTE, // 60 seconds
   batchUpload: false,
 };

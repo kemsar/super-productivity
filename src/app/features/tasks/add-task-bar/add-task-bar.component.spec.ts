@@ -26,6 +26,7 @@ import { DEFAULT_LOCALE } from 'src/app/core/locale.constants';
 import { DateService } from '../../../core/date/date.service';
 import { getDbDateStr } from '../../../util/get-db-date-str';
 import { TaskRepeatCfgService } from '../../task-repeat-cfg/task-repeat-cfg.service';
+import { SS } from '../../../core/persistence/storage-keys.const';
 
 type ProjectServiceSignals = {
   list$: Observable<Project[]>;
@@ -165,6 +166,12 @@ describe('AddTaskBarComponent', () => {
   mockDateTimeFormatService.currentLocale.and.returnValue('en-US');
 
   beforeEach(async () => {
+    // The state service seeds its note draft (and thus isNoteExpanded) from
+    // sessionStorage, which persists across the whole Karma run. Clear it so a
+    // note left behind by another test can't make the note panel start expanded.
+    sessionStorage.removeItem(SS.ADD_TASK_BAR_TXT);
+    sessionStorage.removeItem(SS.ADD_TASK_BAR_NOTE);
+
     // Create spies
     mockTaskService = jasmine.createSpyObj('TaskService', [
       'add',
@@ -373,6 +380,38 @@ describe('AddTaskBarComponent', () => {
       expect(repeatCfg.startDate).toBe('2024-05-19');
     });
 
+    it('seeds skipOverdue ON for an inline Daily repeat (#8644)', async () => {
+      mockTaskService.add.and.returnValue('task-1');
+      const addRepeatCfgSpy = spyOn(
+        TestBed.inject(TaskRepeatCfgService),
+        'addTaskRepeatCfgToTask',
+      );
+
+      component.stateService.updateInputTxt('Daily standup');
+      component.stateService.updateCleanText('Daily standup');
+      component.stateService.updateRepeatSetting('DAILY');
+
+      await component.addTask();
+
+      expect(addRepeatCfgSpy.calls.mostRecent().args[2].skipOverdue).toBe(true);
+    });
+
+    it('keeps skipOverdue OFF for an inline Monthly repeat (#8644)', async () => {
+      mockTaskService.add.and.returnValue('task-1');
+      const addRepeatCfgSpy = spyOn(
+        TestBed.inject(TaskRepeatCfgService),
+        'addTaskRepeatCfgToTask',
+      );
+
+      component.stateService.updateInputTxt('Pay rent');
+      component.stateService.updateCleanText('Pay rent');
+      component.stateService.updateRepeatSetting('MONTHLY_CURRENT_DATE');
+
+      await component.addTask();
+
+      expect(addRepeatCfgSpy.calls.mostRecent().args[2].skipOverdue).toBe(false);
+    });
+
     it('should pass deadlineDay when a deadline date is set without a time', async () => {
       mockTaskService.add.and.returnValue('task-1');
 
@@ -486,6 +525,32 @@ describe('AddTaskBarComponent', () => {
       expect(component.stateService.isNoteExpanded()).toBe(true);
 
       component.toggleNote();
+      expect(component.stateService.isNoteExpanded()).toBe(false);
+    });
+
+    it('Ctrl+2 on the title input toggles the note', () => {
+      // _focusNote runs on expand; focusInput on collapse — both irrelevant here.
+      spyOn(component, 'focusInput');
+      expect(component.stateService.isNoteExpanded()).toBe(false);
+
+      component.onInputKeydown(new KeyboardEvent('keydown', { key: '2', ctrlKey: true }));
+
+      expect(component.stateService.isNoteExpanded()).toBe(true);
+    });
+
+    it('toggleNote is a no-op in search mode (note field is create-mode only)', () => {
+      component.isSearchMode.set(true);
+
+      component.toggleNote();
+
+      expect(component.stateService.isNoteExpanded()).toBe(false);
+    });
+
+    it('expandNote is a no-op in search mode (Ctrl+Enter cannot strand the flag)', () => {
+      component.isSearchMode.set(true);
+
+      component.expandNote();
+
       expect(component.stateService.isNoteExpanded()).toBe(false);
     });
 
@@ -866,12 +931,12 @@ describe('AddTaskBarComponent', () => {
   });
 
   describe('IME handling (Integration)', () => {
-    let inputEl: HTMLInputElement;
+    let inputEl: HTMLTextAreaElement;
 
     beforeEach(() => {
       component.stateService.updateInputTxt('New Task');
       fixture.detectChanges();
-      inputEl = fixture.debugElement.nativeElement.querySelector('input');
+      inputEl = fixture.debugElement.nativeElement.querySelector('.main-input');
     });
 
     const dispatchEnterKeydown = (options: {
@@ -904,6 +969,24 @@ describe('AddTaskBarComponent', () => {
     it('should add a task when Enter is pressed and NOT in IME composition', () => {
       dispatchEnterKeydown({ isComposing: false });
       expect(mockTaskService.add).toHaveBeenCalled();
+    });
+  });
+
+  describe('single-line title (auto-growing textarea)', () => {
+    let inputEl: HTMLTextAreaElement;
+
+    beforeEach(() => {
+      fixture.detectChanges();
+      inputEl = fixture.debugElement.nativeElement.querySelector('.main-input');
+    });
+
+    it('collapses newlines from a pasted title so it stays single-line', () => {
+      inputEl.value = 'first line\nsecond\r\nthird';
+      inputEl.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+
+      expect(component.stateService.inputTxt()).toBe('first line second third');
+      expect(inputEl.value).toBe('first line second third');
     });
   });
 });

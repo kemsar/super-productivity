@@ -74,6 +74,13 @@ export class LocalDataConflictError extends Error {
     public readonly unsyncedCount: number,
     public readonly remoteSnapshotState: Record<string, unknown>,
     public readonly remoteVectorClock?: Record<string, number>,
+    // The client's vector clock as of its last successful sync. Used by the
+    // conflict dialog as an APPROXIMATE baseline for the per-client
+    // changes-since-last-sync delta. Note: compaction can fold still-unsynced ops
+    // into this clock, so the delta can under-count actual local changes — it is a
+    // display heuristic, not an exact "unsynced" figure. `null` for genuinely-fresh
+    // clients that have never synced (SPAP-7).
+    public readonly lastSyncedVectorClock?: Record<string, number> | null,
   ) {
     super(`Local data conflict: ${unsyncedCount} unsynced changes would be lost`);
   }
@@ -105,13 +112,81 @@ export class UnknownSyncStateError extends Error {
   override name = 'UnknownSyncStateError';
 }
 
+/**
+ * A deferred action can never be persisted (invalid entity identifiers or an
+ * invalid operation payload) — a deterministic condition, not a transient
+ * I/O failure. The reducer already committed, so the action stays buffered and
+ * sync remains blocked until reload restores the last durable state.
+ */
+export class PermanentDeferredWriteError extends Error {
+  override name = 'PermanentDeferredWriteError';
+}
+
+/**
+ * A local action was captured while a USE_REMOTE rebuild held the op-log lock,
+ * after the destructive replacement committed. The attempt must abort — the
+ * raced action's reducer ran against live state the replay rewrites, so
+ * completing could let a later snapshot cover an op whose live effect is
+ * missing. The raced ops are preserved and re-applied by the retry/resume.
+ */
+export class CaptureRacedRebuildError extends Error {
+  override name = 'CaptureRacedRebuildError';
+
+  constructor() {
+    super(
+      'USE_REMOTE incomplete: a local change arrived during the rebuild and will be restored on retry.',
+    );
+  }
+}
+
+/** Previously downloaded operations have not completed reducer/archive recovery. */
+export class IncompleteRemoteOperationsError extends Error {
+  override name = 'IncompleteRemoteOperationsError';
+
+  constructor(cause?: unknown) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : 'Downloaded operations are not fully applied.',
+      cause === undefined ? undefined : { cause },
+    );
+  }
+}
+
 // -----ENCRYPTION & COMPRESSION----
 export class DecryptNoPasswordError extends AdditionalLogErrorBase {
   override name = 'DecryptNoPasswordError';
 }
 
+/**
+ * Encryption is expected (isEncrypt=true) but no key is available at upload
+ * time — the dropped-credential signature (GHSA-9544-hjjr-fg8h). Uploading
+ * plaintext instead would silently break the E2EE promise, so the upload path
+ * throws this to trigger the enter-password recovery dialog.
+ * NEVER attach the payload that was about to be encrypted (user content).
+ */
+export class EncryptNoPasswordError extends AdditionalLogErrorBase {
+  override name = 'EncryptNoPasswordError';
+}
+
 export class DecryptError extends AdditionalLogErrorBase {
   override name = 'DecryptError';
+}
+
+/**
+ * Thrown when a successfully-decrypted operation's UNAUTHENTICATED metadata is
+ * inconsistent with its AUTHENTICATED payload — the signature of sync-server
+ * (or MITM) tampering with the plaintext op fields that AES-GCM does not cover.
+ * GHSA-8pxh-mgc7-gp3g.
+ *
+ * Distinct from DecryptError on purpose: it must not carry the raw
+ * message to the user, and (being a sibling, not a subclass) it never matches
+ * the DecryptError branch. SyncWrapperService has a dedicated branch that fails
+ * closed (sync stops) and shows a calm, translated message instead of the raw
+ * technical/GHSA string.
+ */
+export class OperationIntegrityError extends AdditionalLogErrorBase {
+  override name = 'OperationIntegrityError';
 }
 
 export class CompressError extends AdditionalLogErrorBase {
@@ -365,6 +440,25 @@ export class LegacySyncFormatDetectedError extends Error {
       'Sync format mismatch: the remote storage was last written by an older app version ' +
         '(v16.x or earlier) that uses a different sync format. Please update all your ' +
         'devices to the same app version so they use the same sync format.',
+    );
+  }
+}
+
+/**
+ * SPAP-11: thrown when a client with the split-file ("Surgical sync") setting
+ * OFF encounters a sync folder that has already been migrated to the split
+ * format (a v3 tombstone `sync-data.json` and/or a `sync-ops.json`). This is a
+ * SPECIFIC, actionable state — the caller surfaces a "turn on Surgical sync"
+ * notice and pauses safely — distinct from a generic corruption error. No
+ * upload happens, so there is no divergence.
+ */
+export class SplitSyncFormatDetectedError extends Error {
+  override name = 'SplitSyncFormatDetectedError';
+
+  constructor() {
+    super(
+      'This sync folder was upgraded to the split-file format. Enable "Surgical sync" ' +
+        'in Sync settings to continue.',
     );
   }
 }

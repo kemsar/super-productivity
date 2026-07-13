@@ -6,6 +6,7 @@ import {
   MatDialogTitle,
 } from '@angular/material/dialog';
 import { T } from '../../t.const';
+import { IS_DONATION_UI_RESTRICTED } from '../../app.constants';
 import { MatButton } from '@angular/material/button';
 import { TranslatePipe } from '@ngx-translate/core';
 import { MatIcon } from '@angular/material/icon';
@@ -46,6 +47,10 @@ export class DialogPleaseRateComponent {
   protected readonly mailtoUrl = buildFeedbackMailto();
   protected readonly discussionsUrl = DISCUSSIONS_URL;
   protected readonly contributingUrl = CONTRIBUTING_URL;
+  // CONTRIBUTING.md links to GitHub Sponsors. This dialog isn't shown on iOS
+  // (native StoreReview card), but it is shown on macOS, where the link remains
+  // hidden alongside the identical Help-menu link.
+  protected readonly IS_DONATION_UI_RESTRICTED = IS_DONATION_UI_RESTRICTED;
   // Shown as selectable text under the email option so the channel isn't a dead
   // end when no mail client is registered (common on Linux/web) and the mailto:
   // link silently does nothing.

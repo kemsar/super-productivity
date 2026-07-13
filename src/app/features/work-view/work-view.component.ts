@@ -220,6 +220,9 @@ export class WorkViewComponent implements OnInit, OnDestroy {
   private _todayStr = toSignal(this._store.select(selectTodayStr), {
     initialValue: '',
   });
+  // Exposed for the `scheduledDateGroup` pipe (now pure): passing today as an
+  // arg lets the pipe stay pure while still resolving the "Today" group label.
+  readonly todayStr = this._todayStr;
   private _startOfNextDayDiffMs = toSignal(
     this._store.select(selectStartOfNextDayDiffMs),
     { initialValue: 0 },
@@ -257,6 +260,9 @@ export class WorkViewComponent implements OnInit, OnDestroy {
     initialValue: 0,
   });
   workingToday = toSignal(this.workContextService.workingToday$, { initialValue: 0 });
+  breakTimeToday = toSignal(this.workContextService.breakTimeToday$, {
+    initialValue: 0,
+  });
   selectedTaskId = this.taskService.selectedTaskId;
   isOnTodayList = toSignal(this.workContextService.isTodayList$, { initialValue: false });
   isDoneHidden = signal(!!localStorage.getItem(LS.DONE_TASKS_HIDDEN));

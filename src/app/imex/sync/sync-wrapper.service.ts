@@ -21,6 +21,7 @@ import {
   EmptyRemoteBodySPError,
   JsonParseError,
   LegacySyncFormatDetectedError,
+  IncompleteRemoteOperationsError,
   SyncDataCorruptedError,
   UploadRevToMatchMismatchAPIError,
 } from '../../op-log/core/errors/sync-errors';
@@ -36,6 +37,8 @@ import {
   ConflictReason,
   DecryptError,
   DecryptNoPasswordError,
+  OperationIntegrityError,
+  EncryptNoPasswordError,
   MissingCredentialsSPError,
   NetworkUnavailableSPError,
   PotentialCorsError,
@@ -505,6 +508,13 @@ export class SyncWrapperService {
         this._providerManager.setSyncStatus('UNKNOWN_OR_CHANGED');
         return 'HANDLED_ERROR';
       }
+      if (downloadResult.kind === 'blocked_incompatible') {
+        SyncLog.warn(
+          'SyncWrapperService: Download blocked by an incompatible operation.',
+        );
+        this._providerManager.setSyncStatus('ERROR');
+        return 'HANDLED_ERROR';
+      }
 
       // Track the successfully synced provider for switch detection on next sync
       this._providerManager.setLastSyncedProviderId(providerId);
@@ -514,6 +524,13 @@ export class SyncWrapperService {
         syncCapableProvider,
         { isNeverSynced: isNeverSyncedAtSyncStart },
       );
+      if (uploadResult.kind === 'blocked_incompatible') {
+        SyncLog.warn(
+          'SyncWrapperService: Upload piggyback blocked by an incompatible operation.',
+        );
+        this._providerManager.setSyncStatus('ERROR');
+        return 'HANDLED_ERROR';
+      }
       const completedUploadResults: CompletedUploadOutcome[] =
         uploadResult.kind === 'completed' ? [uploadResult] : [];
       if (uploadResult.kind === 'completed') {
@@ -579,6 +596,13 @@ export class SyncWrapperService {
             'SyncWrapperService: LWW re-upload cancelled by user. Skipping remaining sync work.',
           );
           this._providerManager.setSyncStatus('UNKNOWN_OR_CHANGED');
+          return 'HANDLED_ERROR';
+        }
+        if (reuploadResult.kind === 'blocked_incompatible') {
+          SyncLog.warn(
+            'SyncWrapperService: LWW re-upload blocked by an incompatible operation.',
+          );
+          this._providerManager.setSyncStatus('ERROR');
           return 'HANDLED_ERROR';
         }
         if (reuploadResult.kind === 'completed') {
@@ -684,6 +708,16 @@ export class SyncWrapperService {
           // a bit longer since it is a long message
           config: { duration: 12000 },
         });
+        return 'HANDLED_ERROR';
+      } else if (error instanceof IncompleteRemoteOperationsError) {
+        this._providerManager.setSyncStatus('ERROR');
+        if (!this._snackService.hasPendingPersistentAction()) {
+          this._snackService.open({
+            msg: T.F.SYNC.S.INCOMPLETE_REMOTE_OPERATIONS,
+            type: 'ERROR',
+            config: { duration: 0 },
+          });
+        }
         return 'HANDLED_ERROR';
       } else if (
         error instanceof AuthFailSPError ||
@@ -800,7 +834,13 @@ export class SyncWrapperService {
           type: 'ERROR',
         });
         return 'HANDLED_ERROR';
-      } else if (error instanceof DecryptNoPasswordError) {
+      } else if (
+        error instanceof DecryptNoPasswordError ||
+        // Upload-side twin (GHSA-9544-hjjr-fg8h): encryption is enabled but the
+        // key is gone (dropped credentials) — same recovery as the download
+        // case: prompt for the password instead of syncing plaintext.
+        error instanceof EncryptNoPasswordError
+      ) {
         this._handleMissingPasswordDialog();
         return 'HANDLED_ERROR';
       } else if (error instanceof DecryptError) {
@@ -904,17 +944,39 @@ export class SyncWrapperService {
         );
         this._providerManager.setSyncStatus('UNKNOWN_OR_CHANGED');
         return 'HANDLED_ERROR';
+      } else if (error instanceof OperationIntegrityError) {
+        // A decrypted op's unauthenticated metadata contradicted its authenticated
+        // payload, or a plaintext op arrived while encryption is mandatory
+        // (GHSA-8pxh-mgc7-gp3g). Fail closed with a calm, translated message so the
+        // generic handler below cannot surface the raw technical/GHSA string to the
+        // user. The technical details are already in the log.
+        SyncLog.err('SyncWrapperService: operation integrity check failed', {
+          name: error.name,
+        });
+        this._providerManager.setSyncStatus('ERROR');
+        this._snackService.open({
+          msg: T.F.SYNC.S.INTEGRITY_TAMPER_DETECTED,
+          type: 'ERROR',
+          config: { duration: 15000 },
+        });
+        return 'HANDLED_ERROR';
       } else {
         this._providerManager.setSyncStatus('ERROR');
         const errStr = getSyncErrorStr(error);
-        this._snackService.open({
-          // msg: T.F.SYNC.S.UNKNOWN_ERROR,
-          msg: errStr,
-          type: 'ERROR',
-          translateParams: {
-            err: errStr,
-          },
-        });
+        // A lower-level recovery path may already have shown a sticky action
+        // (for example Undo after an interrupted remote-state rebuild). Snack
+        // rendering is debounced, so opening the generic error here would win
+        // the race and silently remove the only recovery action.
+        if (!this._snackService.hasPendingPersistentAction()) {
+          this._snackService.open({
+            // msg: T.F.SYNC.S.UNKNOWN_ERROR,
+            msg: errStr,
+            type: 'ERROR',
+            translateParams: {
+              err: errStr,
+            },
+          });
+        }
         return 'HANDLED_ERROR';
       }
     }
@@ -994,12 +1056,20 @@ export class SyncWrapperService {
         this._providerManager.setSyncStatus('IN_SYNC');
         SyncLog.log('SyncWrapperService: Force upload complete');
       } catch (error) {
-        SyncLog.err('SyncWrapperService: Force upload failed:', error);
-        const errStr = getSyncErrorStr(error);
-        this._snackService.open({
-          msg: errStr,
-          type: 'ERROR',
-        });
+        // GHSA-9544-hjjr-fg8h: a keyless-but-encryption-enabled provider makes
+        // force upload refuse to send plaintext. Route to the enter-password
+        // recovery dialog like the main sync path, not a dead-end error snack —
+        // otherwise "force overwrite" (offered as the lost-key recovery) loops.
+        if (error instanceof EncryptNoPasswordError) {
+          this._handleMissingPasswordDialog();
+        } else {
+          SyncLog.err('SyncWrapperService: Force upload failed:', error);
+          const errStr = getSyncErrorStr(error);
+          this._snackService.open({
+            msg: errStr,
+            type: 'ERROR',
+          });
+        }
       } finally {
         this._syncCycleGuard.end();
       }
@@ -1227,11 +1297,14 @@ export class SyncWrapperService {
           lastUpdateAction: `${error.unsyncedCount} local changes pending`,
           revMap: {},
           crossModelVersion: 1,
+          // Op-log (NoLastSync) conflicts do not carry a last-synced timestamp, so
+          // this is always null here; the dialog renders it as "Never"/"-".
           lastSyncedUpdate: null,
           metaRev: null,
           vectorClock: localClock,
-          lastSyncedVectorClock: null,
+          lastSyncedVectorClock: error.lastSyncedVectorClock ?? null,
         },
+        localUnsyncedOpsCount: error.unsyncedCount,
       };
 
       SyncLog.log(
@@ -1286,6 +1359,13 @@ export class SyncWrapperService {
         return 'HANDLED_ERROR';
       }
     } catch (resolutionError) {
+      // GHSA-9544-hjjr-fg8h: USE_LOCAL force-uploads, which refuses to send
+      // plaintext when the key is missing. Route to the enter-password recovery
+      // dialog instead of a dead-end error snack (mirrors the main sync path).
+      if (resolutionError instanceof EncryptNoPasswordError) {
+        this._handleMissingPasswordDialog();
+        return 'HANDLED_ERROR';
+      }
       // Error during conflict resolution (forceUpload or forceDownload failed)
       SyncLog.err(
         'SyncWrapperService: Error during conflict resolution:',

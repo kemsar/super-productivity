@@ -158,13 +158,31 @@ export class ValidationService {
       };
     }
     if (op.schemaVersion !== undefined) {
-      if (op.schemaVersion < 1 || op.schemaVersion > 100) {
+      if (
+        !Number.isInteger(op.schemaVersion) ||
+        op.schemaVersion < 1 ||
+        op.schemaVersion > 100
+      ) {
         return {
           valid: false,
           error: `Invalid schema version: ${op.schemaVersion}`,
           errorCode: SYNC_ERROR_CODES.INVALID_SCHEMA_VERSION,
         };
       }
+    }
+
+    // A non-integer or non-finite timestamp cannot be persisted: uploads store
+    // clientTimestamp as BigInt, and BigInt() throws on such values, which would
+    // abort the whole batch mid-insert with an unstructured 500. Reject it here as
+    // a per-op error instead. Age is deliberately NOT bounded — old-but-valid ops
+    // are accepted so long-offline devices keep their backlog (#8961); causality
+    // is resolved by vector clocks, not by the client timestamp.
+    if (!Number.isSafeInteger(op.timestamp)) {
+      return {
+        valid: false,
+        error: 'Invalid timestamp',
+        errorCode: SYNC_ERROR_CODES.INVALID_TIMESTAMP,
+      };
     }
 
     const clockValidation = sanitizeVectorClock(op.vectorClock);
@@ -219,17 +237,6 @@ export class ValidationService {
         valid: false,
         error: payloadValidation.error,
         errorCode: SYNC_ERROR_CODES.INVALID_PAYLOAD,
-      };
-    }
-
-    // Note: Future timestamp check removed - clamping is handled during operation upload
-    // to preserve data instead of rejecting. Only "too old" check remains.
-    const now = Date.now();
-    if (op.timestamp < now - this.config.retentionMs) {
-      return {
-        valid: false,
-        error: 'Operation too old',
-        errorCode: SYNC_ERROR_CODES.INVALID_TIMESTAMP,
       };
     }
 

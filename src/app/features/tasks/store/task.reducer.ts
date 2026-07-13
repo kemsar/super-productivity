@@ -12,7 +12,6 @@ import {
   setCurrentTask,
   setSelectedTask,
   toggleStart,
-  toggleTaskHideSubTasks,
   unsetCurrentTask,
   updateTaskUi,
 } from './task.actions';
@@ -53,6 +52,7 @@ import {
 } from '../../time-tracking/store/time-tracking.actions';
 import { TaskLog } from '../../../core/log';
 import { devError } from '../../../util/dev-error';
+import { moveValidIdsToFront } from '../util/move-valid-ids-to-front';
 
 export { taskAdapter };
 
@@ -142,6 +142,7 @@ const reorderSubTask = (
     TaskLog.err(`Parent task ${parentId} not found`);
     return state;
   }
+
   const parentSubTaskIds = parentTask.subTaskIds;
 
   // Check if the subtask is actually in the parent's subtask list
@@ -360,49 +361,6 @@ export const taskReducer = createReducer<TaskState>(
   // Bulk task updates - used for archive task batch operations
   on(TaskSharedActions.updateTasks, (state, { tasks }) => {
     return taskAdapter.updateMany(tasks, state);
-  }),
-
-  // TODO simplify
-  on(toggleTaskHideSubTasks, (state, { taskId, isShowLess, isEndless }) => {
-    const task = getTaskById(taskId, state);
-    const subTasks = task.subTaskIds.map((id) => getTaskById(id, state));
-    const doneTasksLength = subTasks.filter((t) => t.isDone).length;
-    const isDoneTaskCaseNeeded = doneTasksLength && doneTasksLength < subTasks.length;
-    // for easier calculations we use 0 instead of undefined for show state
-    const oldVal = task._hideSubTasksMode || 0;
-    let newVal: number = isShowLess ? oldVal + 1 : oldVal - 1;
-
-    if (!isDoneTaskCaseNeeded && newVal === 1) {
-      if (isShowLess) {
-        newVal = 2;
-      } else {
-        newVal = 0;
-      }
-    }
-
-    if (isEndless) {
-      if (newVal < 0) {
-        newVal = 2;
-      } else if (newVal > 2) {
-        newVal = 0;
-      }
-    } else {
-      if (newVal < 0) {
-        newVal = 0;
-      } else if (newVal > 2) {
-        newVal = 2;
-      }
-    }
-
-    return taskAdapter.updateOne(
-      {
-        id: taskId,
-        changes: {
-          _hideSubTasksMode: newVal || undefined,
-        },
-      },
-      state,
-    );
   }),
 
   on(moveSubTask, (state, { taskId, srcTaskId, targetTaskId, afterTaskId }) => {
@@ -743,25 +701,31 @@ export const taskReducer = createReducer<TaskState>(
   }),
 
   on(TaskSharedActions.removeTasksFromTodayTag, (state, { taskIds }) => {
-    const validTaskIds = taskIds.filter((id) => !!state.entities[id]);
-    if (validTaskIds.length !== taskIds.length) {
-      devError(
-        `removeTasksFromTodayTag: ${taskIds.length - validTaskIds.length} orphan ID(s) filtered`,
-      );
+    // we do this to maintain the order of tasks when they are moved to overdue
+    const { ids, invalidCount } = moveValidIdsToFront(
+      state.ids as string[],
+      taskIds,
+      (id) => !!state.entities[id],
+    );
+    if (invalidCount > 0) {
+      devError(`removeTasksFromTodayTag: ${invalidCount} orphan ID(s) filtered`);
     }
     return {
       ...state,
-      // we do this to maintain the order of tasks when they are moved to overdue
-      ids: [...validTaskIds, ...state.ids.filter((id) => !taskIds.includes(id))],
+      ids,
     };
   }),
 
   // Same reordering for the non-persistent variant (#6992)
   on(TaskSharedActions.localRemoveOverdueFromToday, (state, { taskIds }) => {
-    const validTaskIds = taskIds.filter((id) => !!state.entities[id]);
+    const { ids } = moveValidIdsToFront(
+      state.ids as string[],
+      taskIds,
+      (id) => !!state.entities[id],
+    );
     return {
       ...state,
-      ids: [...validTaskIds, ...state.ids.filter((id) => !taskIds.includes(id))],
+      ids,
     };
   }),
 );

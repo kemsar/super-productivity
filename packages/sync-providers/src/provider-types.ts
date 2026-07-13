@@ -160,6 +160,12 @@ export interface OperationSyncCapable<
     clientId: string,
     lastKnownServerSeq?: number,
   ): Promise<OpUploadResponse>;
+  /**
+   * @param limit Best-effort page-size hint. Cursor-based providers (SuperSync)
+   * honor it and paginate; cursorless file-based providers cannot paginate (they
+   * re-download the whole file each call) and ignore it, returning their whole
+   * write-bounded ops buffer in a single page (`hasMore` is always `false`).
+   */
   downloadOps(
     sinceSeq: number,
     excludeClient?: string,
@@ -188,6 +194,16 @@ export interface OperationSyncCapable<
    * encrypted config — the dropped-credential signature.
    */
   isEncryptionEnabled?(): Promise<boolean>;
+  /**
+   * Whether encryption is enabled for this provider but no usable key is
+   * available — the dropped-credential signature (GHSA-9544-hjjr-fg8h).
+   * File-based providers encrypt inside the adapter and do not expose
+   * `getEncryptKey`, so the upload path cannot infer their missing key from the
+   * `isEncryptionMandatory` guard; it queries this instead and fails closed
+   * (refuses to upload) rather than silently sending plaintext. Providers that
+   * surface their key via `getEncryptKey` (SuperSync) leave this unset.
+   */
+  isEncryptionKeyMissing?(): Promise<boolean>;
   /**
    * Whether this provider mandates end-to-end encryption and must NEVER transmit
    * plaintext operations. When true, the upload path refuses to push ops while no

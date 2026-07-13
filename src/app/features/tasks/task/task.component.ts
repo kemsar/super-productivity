@@ -42,7 +42,11 @@ import {
   CollapsibleComponent,
   GROUP_NAV_SELECTOR,
 } from '../../../ui/collapsible/collapsible.component';
-import { findAdjacentFocusable } from '../../../util/find-adjacent-focusable';
+import {
+  findAdjacentFocusable,
+  findLastTaskInSubtree,
+  findNextTaskAfterSubtree,
+} from '../../../util/find-adjacent-focusable';
 import { TaskAttachmentService } from '../task-attachment/task-attachment.service';
 import { DialogEditTaskAttachmentComponent } from '../task-attachment/dialog-edit-attachment/dialog-edit-task-attachment.component';
 import { ProjectService } from '../../project/project.service';
@@ -71,12 +75,17 @@ import { DateService } from '../../../core/date/date.service';
 import { isTouchActive } from '../../../util/input-intent';
 import { IS_HYBRID_DEVICE } from '../../../util/is-mouse-primary';
 import { DRAG_DELAY_FOR_TOUCH } from '../../../app.constants';
-import { KeyboardConfig } from '@sp/keyboard-config';
+import {
+  EMPTY_KEYBOARD_CONFIG,
+  KeyboardConfig,
+  keyboardConfigOrEmpty,
+} from '@sp/keyboard-config';
 import { DialogScheduleTaskComponent } from '../../planner/dialog-schedule-task/dialog-schedule-task.component';
 import { PlannerActions } from '../../planner/store/planner.actions';
 import { PlannerService } from '../../planner/planner.service';
 import { DialogDeadlineComponent } from '../dialog-deadline/dialog-deadline.component';
 import { isDeadlineOverdue as isDeadlineOverdueFn } from '../util/is-deadline-overdue';
+import { isTaskOverdue } from '../util/is-task-overdue';
 import { isDeadlineApproaching as isDeadlineApproachingFn } from '../util/is-deadline-approaching';
 import { TaskContextMenuComponent } from '../task-context-menu/task-context-menu.component';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
@@ -124,7 +133,7 @@ import { AddSubtaskInputService } from '../add-subtask-input/add-subtask-input.s
   host: {
     '[id]': 'taskIdWithPrefix()',
     '[attr.data-task-id]': 'task().id',
-    '[tabindex]': '1',
+    '[tabindex]': '0',
     '[class.isDone]': 'task().isDone',
     '[class.isCurrent]': 'isCurrent()',
     '[class.isSelected]': 'isSelected()',
@@ -230,7 +239,7 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
     return 'chat';
   });
 
-  isTodayListActive = computed(() => this.workContextService.isTodayList);
+  isTodayListActive = computed(() => this.workContextService.isTodayListSignal());
   taskIdWithPrefix = computed(() => 't-' + this.task().id);
   isRepeatTaskCreatedToday = computed(
     () => !!(this.task().repeatCfgId && this._dateService.isToday(this.task().created)),
@@ -695,6 +704,13 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
     move: (id: string, parentId: string | undefined, isBacklog: boolean) => void,
   ): void {
     const t = this.task();
+    // Top-level done tasks in the main list are ordered by completion date, so
+    // a manual reorder can't take effect — skip it to avoid emitting a spurious
+    // taskIds-reorder op that would sync to other devices. Done subtasks and
+    // backlog tasks are not auto-sorted, so they stay reorderable.
+    if (t.isDone && !t.parentId && !this.isBacklog()) {
+      return;
+    }
     move(t.id, t.parentId, this.isBacklog());
     // timeout required to let changes take place
     setTimeout(() => this.focusSelf());
@@ -939,7 +955,22 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
       // Return focus to the task the draft was opened from (which may be a
       // subtask) so keyboard navigation continues from there after cancelling.
       this._refocusTaskAfterDraftCancel(originTaskId);
+    } else if (reason === 'prev' || reason === 'next') {
+      this._focusFromClosedSubtaskInput(reason);
     }
+  }
+
+  private _focusFromClosedSubtaskInput(direction: 'prev' | 'next'): void {
+    // The input follows the rendered subtask list. Its previous row is therefore
+    // the last visible subtask (or the parent), while its next row follows the
+    // entire parent subtree in document order.
+    window.setTimeout(() => {
+      const host = this._elementRef.nativeElement as HTMLElement;
+      const lastRow = findLastTaskInSubtree(host);
+      const target =
+        direction === 'prev' ? lastRow : (findNextTaskAfterSubtree(host) ?? lastRow);
+      target.focus();
+    });
   }
 
   private _refocusTaskAfterDraftCancel(taskId: string | null): void {
@@ -1351,11 +1382,32 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
 
   moveToToday(): void {
     const t = this.task();
-    if (t.projectId) {
-      // Moving to the regular list is a list-position change only; it must not
-      // schedule the task for today (#8592).
-      this._projectService.moveTaskToTodayList(t.id, t.projectId);
+    if (!t.projectId) {
+      return;
     }
+    // An overdue task is never in the backlog, so the position-only move below
+    // early-returns for it (moveProjectTaskToRegularListAuto) and Shift+T would
+    // no-op. Schedule it for today instead — the same thing the "Add to My Day"
+    // button and Schedule → Today do (#8851). Overdue vs. backlog→regular are
+    // cleanly separated because overdue tasks are never in the backlog. Exclude
+    // done tasks: a done task with a stale past dueDay can still sit in the
+    // backlog, and it should take the position-only move, not be re-added to
+    // Today. (isTaskOverdue stays done-agnostic — selectOverdueTasks needs
+    // done tasks included.)
+    if (
+      !t.isDone &&
+      isTaskOverdue(
+        t,
+        this._dateService.todayStr(),
+        this._dateService.getStartOfNextDayDiffMs(),
+      )
+    ) {
+      this.addToMyDay();
+      return;
+    }
+    // Moving to the regular list is a list-position change only; it must not
+    // schedule the task for today (#8592).
+    this._projectService.moveTaskToTodayList(t.id, t.projectId);
   }
 
   trackByProjectId(i: number, project: Project): string {
@@ -1394,9 +1446,9 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
 
   get kb(): KeyboardConfig {
     if (isTouchActive()) {
-      return {} as KeyboardConfig;
+      return EMPTY_KEYBOARD_CONFIG;
     }
-    return (this._configService.cfg()?.keyboard as KeyboardConfig) || {};
+    return keyboardConfigOrEmpty(this._configService.cfg()?.keyboard as KeyboardConfig);
   }
 
   protected readonly ICAL_TYPE = ICAL_TYPE;

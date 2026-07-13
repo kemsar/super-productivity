@@ -23,6 +23,7 @@ import {
   AuthFailSPError,
   MissingCredentialsSPError,
   NetworkUnavailableSPError,
+  OperationIntegrityError,
   PotentialCorsError,
   SyncProviderId,
   SyncStatus,
@@ -36,7 +37,10 @@ import {
   SyncDataCorruptedError,
   UploadRevToMatchMismatchAPIError,
   WebDavNativeRequestError,
+  EncryptNoPasswordError,
+  IncompleteRemoteOperationsError,
 } from '../../op-log/core/errors/sync-errors';
+import { DialogEnterEncryptionPasswordComponent } from './dialog-enter-encryption-password/dialog-enter-encryption-password.component';
 import { MAX_LWW_REUPLOAD_RETRIES } from '../../op-log/core/operation-log.const';
 
 describe('SyncWrapperService', () => {
@@ -155,7 +159,11 @@ describe('SyncWrapperService', () => {
       cfg$: configSubject.asObservable(),
     });
 
-    mockSnackService = jasmine.createSpyObj('SnackService', ['open']);
+    mockSnackService = jasmine.createSpyObj('SnackService', [
+      'open',
+      'hasPendingPersistentAction',
+    ]);
+    mockSnackService.hasPendingPersistentAction.and.returnValue(false);
     mockMatDialog = jasmine.createSpyObj('MatDialog', ['open'], {
       openDialogs: [],
     });
@@ -581,6 +589,19 @@ describe('SyncWrapperService', () => {
 
       expect(mockProviderManager.setLastSyncedProviderId).not.toHaveBeenCalled();
     });
+
+    it('should stop with ERROR when download is blocked by an incompatible op', async () => {
+      mockSyncService.downloadRemoteOps.and.resolveTo({
+        kind: 'blocked_incompatible',
+      });
+
+      const result = await service.sync();
+
+      expect(result).toBe('HANDLED_ERROR');
+      expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('ERROR');
+      expect(mockProviderManager.setLastSyncedProviderId).not.toHaveBeenCalled();
+      expect(mockSyncService.uploadPendingOps).not.toHaveBeenCalled();
+    });
   });
 
   describe('_sync() - Sync flow', () => {
@@ -998,6 +1019,17 @@ describe('SyncWrapperService', () => {
       expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('IN_SYNC');
     });
 
+    it('should stop with ERROR when upload piggyback is blocked by an incompatible op', async () => {
+      mockSyncService.uploadPendingOps.and.resolveTo({
+        kind: 'blocked_incompatible',
+      });
+
+      const result = await service.sync();
+
+      expect(result).toBe('HANDLED_ERROR');
+      expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('ERROR');
+    });
+
     it('should set IN_SYNC when permanentRejectionCount is 0 even with empty rejectedOps array', async () => {
       mockSyncService.uploadPendingOps.and.returnValue(
         Promise.resolve({
@@ -1019,6 +1051,35 @@ describe('SyncWrapperService', () => {
   });
 
   describe('Error handling', () => {
+    it('should surface incomplete remote application as a sticky translated error', async () => {
+      mockSyncService.downloadRemoteOps.and.rejectWith(
+        new IncompleteRemoteOperationsError(),
+      );
+
+      const result = await service.sync();
+
+      expect(result).toBe('HANDLED_ERROR');
+      expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('ERROR');
+      expect(mockSnackService.open).toHaveBeenCalledWith({
+        msg: T.F.SYNC.S.INCOMPLETE_REMOTE_OPERATIONS,
+        type: 'ERROR',
+        config: { duration: 0 },
+      });
+    });
+
+    it('should preserve an existing persistent recovery action for incomplete remote work', async () => {
+      mockSnackService.hasPendingPersistentAction.and.returnValue(true);
+      mockSyncService.downloadRemoteOps.and.rejectWith(
+        new IncompleteRemoteOperationsError(new Error('archive failed')),
+      );
+
+      const result = await service.sync();
+
+      expect(result).toBe('HANDLED_ERROR');
+      expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('ERROR');
+      expect(mockSnackService.open).not.toHaveBeenCalled();
+    });
+
     it('should handle PotentialCorsError with snack message', async () => {
       mockSyncService.downloadRemoteOps.and.returnValue(
         Promise.reject(new PotentialCorsError('https://example.com')),
@@ -1031,6 +1092,30 @@ describe('SyncWrapperService', () => {
         jasmine.objectContaining({
           type: 'ERROR',
         }),
+      );
+    });
+
+    it('should handle OperationIntegrityError with a calm ERROR snack, not the password dialog', async () => {
+      // GHSA-8pxh-mgc7-gp3g: decryption succeeded but metadata was tampered (or a
+      // plaintext op arrived while encryption is mandatory). Must fail closed with
+      // a non-jargon message and NOT route to the enter-password recovery dialog.
+      mockSyncService.downloadRemoteOps.and.returnValue(
+        Promise.reject(new OperationIntegrityError('tampered. GHSA-8pxh-mgc7-gp3g')),
+      );
+
+      const result = await service.sync(true);
+
+      expect(result).toBe('HANDLED_ERROR');
+      expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('ERROR');
+      expect(mockSnackService.open).toHaveBeenCalledWith(
+        jasmine.objectContaining({
+          msg: T.F.SYNC.S.INTEGRITY_TAMPER_DETECTED,
+          type: 'ERROR',
+        }),
+      );
+      // The raw GHSA/technical string must never reach the user.
+      expect(mockSnackService.open).not.toHaveBeenCalledWith(
+        jasmine.objectContaining({ msg: jasmine.stringMatching(/GHSA-/) }),
       );
     });
 
@@ -1623,6 +1708,37 @@ describe('SyncWrapperService', () => {
         );
       });
 
+      // GHSA-9544-hjjr-fg8h: USE_LOCAL force-uploads, which refuses to send
+      // plaintext when the key is missing. Route to the enter-password recovery
+      // dialog instead of a dead-end error snack.
+      it('should open the enter-password dialog (not an error snack) when USE_LOCAL hits a missing key', async () => {
+        const conflictError = new LocalDataConflictError(
+          2,
+          { tasks: [] },
+          { clientB: 3 },
+        );
+        mockSyncService.downloadRemoteOps.and.returnValue(Promise.reject(conflictError));
+
+        mockMatDialog.open.and.returnValue({
+          afterClosed: () => of('USE_LOCAL'),
+        } as any);
+
+        mockSyncService.forceUploadLocalState = jasmine
+          .createSpy('forceUploadLocalState')
+          .and.rejectWith(new EncryptNoPasswordError('key missing'));
+
+        const result = await service.sync();
+
+        expect(result).toBe('HANDLED_ERROR');
+        expect(mockMatDialog.open).toHaveBeenCalledWith(
+          DialogEnterEncryptionPasswordComponent,
+          jasmine.anything(),
+        );
+        expect(mockSnackService.open).not.toHaveBeenCalledWith(
+          jasmine.objectContaining({ type: 'ERROR' }),
+        );
+      });
+
       // Issue #7330: even when forceDownloadRemoteState succeeds, if it
       // flips the session-validation latch, the wrapper must not claim IN_SYNC.
       it('should return HANDLED_ERROR with ERROR status when forceDownloadRemoteState flips the latch', async () => {
@@ -1784,6 +1900,19 @@ describe('SyncWrapperService', () => {
           type: 'ERROR',
         }),
       );
+    });
+
+    it('should preserve a persistent recovery action when sync rethrows', async () => {
+      mockSnackService.hasPendingPersistentAction.and.returnValue(true);
+      mockSyncService.downloadRemoteOps.and.rejectWith(
+        new Error('Interrupted rebuild could not resume'),
+      );
+
+      const result = await service.sync();
+
+      expect(result).toBe('HANDLED_ERROR');
+      expect(mockProviderManager.setSyncStatus).toHaveBeenCalledWith('ERROR');
+      expect(mockSnackService.open).not.toHaveBeenCalled();
     });
 
     it('should treat UploadRevToMatchMismatchAPIError as transient: set UNKNOWN_OR_CHANGED, no error snackbar', async () => {

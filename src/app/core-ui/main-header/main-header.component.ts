@@ -23,9 +23,10 @@ import { SyncWrapperService } from '../../imex/sync/sync-wrapper.service';
 import { SnackService } from '../../core/snack/snack.service';
 import { NavigationEnd, Router } from '@angular/router';
 import { GlobalConfigService } from '../../features/config/global-config.service';
-import { KeyboardConfig } from '@sp/keyboard-config';
+import { KeyboardConfig, keyboardConfigOrEmpty } from '@sp/keyboard-config';
 import { MatIconButton } from '@angular/material/button';
 import { MatIcon } from '@angular/material/icon';
+import { MatBadge } from '@angular/material/badge';
 import { MatTooltip } from '@angular/material/tooltip';
 import { TranslatePipe } from '@ngx-translate/core';
 import { SimpleCounterButtonComponent } from '../../features/simple-counter/simple-counter-button/simple-counter-button.component';
@@ -48,6 +49,8 @@ import { DateService } from '../../core/date/date.service';
 import { UserProfileButtonComponent } from '../../features/user-profile/user-profile-button/user-profile-button.component';
 import { FocusButtonComponent } from './focus-button/focus-button.component';
 import { UserProfileService } from '../../features/user-profile/user-profile.service';
+import { EmlDropDirective } from '../../core/drop-paste-input/eml-drop.directive';
+import { ConflictJournalService } from '../../op-log/sync/conflict-journal.service';
 
 @Component({
   selector: 'main-header',
@@ -58,10 +61,12 @@ import { UserProfileService } from '../../features/user-profile/user-profile.ser
   imports: [
     MatIconButton,
     MatIcon,
+    MatBadge,
     MatTooltip,
     TranslatePipe,
     SimpleCounterButtonComponent,
     LongPressDirective,
+    EmlDropDirective,
     PluginHeaderBtnsComponent,
     PluginWorkContextHeaderBtnsComponent,
     PluginSidePanelBtnsComponent,
@@ -91,10 +96,15 @@ export class MainHeaderComponent implements OnDestroy {
   private readonly _metricService = inject(MetricService);
   private readonly _dateService = inject(DateService);
   private readonly _dataInitStateService = inject(DataInitStateService);
+  private readonly _conflictJournal = inject(ConflictJournalService);
 
   readonly isDataLoaded = toSignal(this._dataInitStateService.isAllDataLoadedInitially$, {
     initialValue: false,
   });
+
+  // SPAP-15: persistent badge on the sync icon — count of unreviewed
+  // auto-resolved sync conflicts awaiting review.
+  readonly unreviewedConflictCount = this._conflictJournal.unreviewedCount;
 
   T: typeof T = T;
   isShowSimpleCounterBtnsDropdown = signal(false);
@@ -292,6 +302,11 @@ export class MainHeaderComponent implements OnDestroy {
 
   sync(): void {
     this.syncWrapperService.sync(true).then((r) => {
+      // Keep persistent recovery actions (for example USE_REMOTE Undo) visible;
+      // routine sync-success feedback must not replace them.
+      if (this._snackService.hasPendingPersistentAction()) {
+        return;
+      }
       if (
         r === SyncStatus.UpdateLocal ||
         r === SyncStatus.UpdateRemoteAll ||
@@ -342,6 +357,6 @@ export class MainHeaderComponent implements OnDestroy {
   }
 
   get kb(): KeyboardConfig {
-    return (this._configService.cfg()?.keyboard as KeyboardConfig) || {};
+    return keyboardConfigOrEmpty(this._configService.cfg()?.keyboard as KeyboardConfig);
   }
 }
