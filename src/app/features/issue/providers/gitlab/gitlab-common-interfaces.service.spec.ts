@@ -14,6 +14,9 @@ import {
 import { createTask } from '../../../tasks/task.test-helper';
 import { Task } from '../../../tasks/task.model';
 import { IssueProviderGitlab } from '../../issue.model';
+import { TagService } from '../../../tag/tag.service';
+import { signal } from '@angular/core';
+import { Tag } from '../../../tag/tag.model';
 
 const ISSUE_PROVIDER_ID = 'gitlab-provider-1';
 const ISSUE_ID = 'project/repo#42';
@@ -112,6 +115,11 @@ describe('GitlabCommonInterfacesService', () => {
   let gitlabApiService: jasmine.SpyObj<GitlabApiService>;
   let gitlabGraphqlApiService: jasmine.SpyObj<GitlabGraphqlApiService>;
   let issueProviderService: jasmine.SpyObj<IssueProviderService>;
+  let tagServiceStub: {
+    tags: ReturnType<typeof signal<Tag[]>>;
+    addTag: jasmine.Spy<(tag: Partial<Tag>) => string>;
+  };
+  let tagIdCounter: number;
 
   beforeEach(() => {
     gitlabApiService = jasmine.createSpyObj('GitlabApiService', [
@@ -129,6 +137,23 @@ describe('GitlabCommonInterfacesService', () => {
     gitlabGraphqlApiService.isAvailable.and.returnValue(false);
     issueProviderService = jasmine.createSpyObj('IssueProviderService', ['getCfgOnce$']);
     issueProviderService.getCfgOnce$.and.returnValue(of(BASE_CFG));
+    tagIdCounter = 0;
+    // TagService.tags is a computed signal on the real service, so a plain
+    // spy method won't satisfy the Signal<> shape. A writable signal-backed
+    // stub is enough for the label→tag helpers used by the read side.
+    tagServiceStub = {
+      tags: signal<Tag[]>([]),
+      addTag: jasmine
+        .createSpy<(tag: Partial<Tag>) => string>('addTag')
+        .and.callFake((tag) => {
+          const id = `tag-${++tagIdCounter}`;
+          tagServiceStub.tags.update((prev) => [
+            ...prev,
+            { id, title: tag.title ?? '', taskIds: [] } as unknown as Tag,
+          ]);
+          return id;
+        }),
+    };
 
     TestBed.configureTestingModule({
       providers: [
@@ -136,6 +161,7 @@ describe('GitlabCommonInterfacesService', () => {
         { provide: GitlabApiService, useValue: gitlabApiService },
         { provide: GitlabGraphqlApiService, useValue: gitlabGraphqlApiService },
         { provide: IssueProviderService, useValue: issueProviderService },
+        { provide: TagService, useValue: tagServiceStub },
       ],
     });
     service = TestBed.inject(GitlabCommonInterfacesService);
@@ -329,6 +355,162 @@ describe('GitlabCommonInterfacesService', () => {
 
       expect(gitlabGraphqlApiService.getById$).not.toHaveBeenCalled();
       expect(gitlabApiService.getById$).toHaveBeenCalled();
+    });
+  });
+
+  describe('label sync (issue #14)', () => {
+    const cfgWithLabelSync: IssueProviderGitlab = {
+      ...BASE_CFG,
+      isSyncLabelsAsTags: true,
+    };
+    const makeIssueWithLabels = (updatedAt: string, labels: string[]): GitlabIssue => ({
+      ...makeIssue(updatedAt),
+      labels,
+    });
+
+    describe('getAddTaskDataForCfg', () => {
+      it('returns base shape when isSyncLabelsAsTags is off', () => {
+        const result = service.getAddTaskDataForCfg(
+          makeIssueWithLabels(BASE_UPDATED_AT, ['bug', 'ready']),
+          { ...BASE_CFG, isSyncLabelsAsTags: false },
+        );
+        expect(result.tagIds).toBeUndefined();
+        expect(result.issueLastSyncedValues).toBeUndefined();
+      });
+
+      it('creates SP tags for issue labels and stamps issueLastSyncedValues', () => {
+        const result = service.getAddTaskDataForCfg(
+          makeIssueWithLabels(BASE_UPDATED_AT, ['bug', 'ready']),
+          cfgWithLabelSync,
+        );
+        expect(result.tagIds).toHaveSize(2);
+        expect(tagServiceStub.addTag).toHaveBeenCalledWith({ title: 'bug' });
+        expect(tagServiceStub.addTag).toHaveBeenCalledWith({ title: 'ready' });
+        expect((result.issueLastSyncedValues as { labels: string[] }).labels).toEqual([
+          'bug',
+          'ready',
+        ]);
+      });
+
+      it('reuses existing SP tags with matching titles (case-insensitive)', () => {
+        tagServiceStub.tags.set([
+          { id: 'preexisting', title: 'Bug', taskIds: [] } as unknown as Tag,
+        ]);
+        const result = service.getAddTaskDataForCfg(
+          makeIssueWithLabels(BASE_UPDATED_AT, ['bug']),
+          cfgWithLabelSync,
+        );
+        expect(result.tagIds).toEqual(['preexisting']);
+        expect(tagServiceStub.addTag).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('getFreshDataForIssueTask', () => {
+      it('projects remote labels onto tagIds and stamps last-synced labels', async () => {
+        issueProviderService.getCfgOnce$.and.returnValue(of(cfgWithLabelSync));
+        gitlabApiService.getById$.and.returnValue(
+          of(makeIssueWithLabels(NEWER_UPDATED_AT, ['bug'])),
+        );
+
+        const result = await service.getFreshDataForIssueTask(
+          makeTask(new Date(BASE_UPDATED_AT).getTime()),
+        );
+
+        expect(result?.taskChanges.tagIds).toHaveSize(1);
+        expect(
+          (result?.taskChanges.issueLastSyncedValues as { labels: string[] })?.labels,
+        ).toEqual(['bug']);
+      });
+
+      it('is a no-op when labels are unchanged and updated_at is unchanged', async () => {
+        issueProviderService.getCfgOnce$.and.returnValue(of(cfgWithLabelSync));
+        gitlabApiService.getById$.and.returnValue(
+          of(makeIssueWithLabels(BASE_UPDATED_AT, ['bug'])),
+        );
+        const task: Task = {
+          ...makeTask(new Date(BASE_UPDATED_AT).getTime()),
+          issueLastSyncedValues: { labels: ['bug'] },
+        };
+
+        const result = await service.getFreshDataForIssueTask(task);
+
+        expect(result).toBeNull();
+      });
+
+      it('detects label-only changes even when updated_at has not advanced', async () => {
+        issueProviderService.getCfgOnce$.and.returnValue(of(cfgWithLabelSync));
+        gitlabApiService.getById$.and.returnValue(
+          of(makeIssueWithLabels(BASE_UPDATED_AT, ['bug', 'ready'])),
+        );
+        const task: Task = {
+          ...makeTask(new Date(BASE_UPDATED_AT).getTime()),
+          issueLastSyncedValues: { labels: ['bug'] },
+        };
+
+        const result = await service.getFreshDataForIssueTask(task);
+
+        expect(result).not.toBeNull();
+        expect(
+          (result?.taskChanges.issueLastSyncedValues as { labels: string[] })?.labels,
+        ).toEqual(['bug', 'ready']);
+      });
+
+      it('preserves user-added tags that do not correspond to any label', async () => {
+        tagServiceStub.tags.set([
+          { id: 'user-tag', title: 'personal', taskIds: [] } as unknown as Tag,
+          { id: 'bug-tag', title: 'bug', taskIds: [] } as unknown as Tag,
+        ]);
+        issueProviderService.getCfgOnce$.and.returnValue(of(cfgWithLabelSync));
+        gitlabApiService.getById$.and.returnValue(
+          of(makeIssueWithLabels(NEWER_UPDATED_AT, ['bug'])),
+        );
+        const task: Task = {
+          ...makeTask(new Date(BASE_UPDATED_AT).getTime()),
+          tagIds: ['user-tag'],
+          issueLastSyncedValues: { labels: [] },
+        };
+
+        const result = await service.getFreshDataForIssueTask(task);
+
+        expect(result?.taskChanges.tagIds).toContain('user-tag');
+        expect(result?.taskChanges.tagIds).toContain('bug-tag');
+      });
+
+      it('drops tag ids that came from labels no longer on the remote issue', async () => {
+        tagServiceStub.tags.set([
+          { id: 'old-label-tag', title: 'in-progress', taskIds: [] } as unknown as Tag,
+          { id: 'kept-user-tag', title: 'personal', taskIds: [] } as unknown as Tag,
+          { id: 'new-label-tag', title: 'done', taskIds: [] } as unknown as Tag,
+        ]);
+        issueProviderService.getCfgOnce$.and.returnValue(of(cfgWithLabelSync));
+        gitlabApiService.getById$.and.returnValue(
+          of(makeIssueWithLabels(NEWER_UPDATED_AT, ['done'])),
+        );
+        const task: Task = {
+          ...makeTask(new Date(BASE_UPDATED_AT).getTime()),
+          tagIds: ['old-label-tag', 'kept-user-tag'],
+          issueLastSyncedValues: { labels: ['in-progress'] },
+        };
+
+        const result = await service.getFreshDataForIssueTask(task);
+
+        expect(result?.taskChanges.tagIds).toEqual(['kept-user-tag', 'new-label-tag']);
+      });
+
+      it('leaves the base behaviour untouched when the flag is off', async () => {
+        issueProviderService.getCfgOnce$.and.returnValue(of(BASE_CFG));
+        gitlabApiService.getById$.and.returnValue(
+          of(makeIssueWithLabels(NEWER_UPDATED_AT, ['bug'])),
+        );
+
+        const result = await service.getFreshDataForIssueTask(
+          makeTask(new Date(BASE_UPDATED_AT).getTime()),
+        );
+
+        // Base did update (updated_at advanced), but no tagIds mutations.
+        expect(result?.taskChanges.tagIds).toBeUndefined();
+        expect(result?.taskChanges.issueLastSyncedValues).toBeUndefined();
+      });
     });
   });
 });

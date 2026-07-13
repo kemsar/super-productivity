@@ -22,4 +22,13 @@ export interface GitlabCfg extends BaseIssueProviderCfg {
   /** @deprecated backwards compatibility: optional for persisted data created before this field existed */
   isEnableTimeTracking?: boolean;
   pollIntervalMinutes?: number;
+  /**
+   * When true, GitLab issue labels sync bidirectionally with SP tags on
+   * issue-linked tasks (issue #14). Read: labels project onto `task.tagIds`,
+   * creating SP tags on demand. Write: `task.tagIds` changes push back as
+   * `add_labels` / `remove_labels` on the issue. Both sides key off the
+   * label title. Off by default — labels can be numerous and not all
+   * workflows want them mirrored.
+   */
+  isSyncLabelsAsTags?: boolean;
 }

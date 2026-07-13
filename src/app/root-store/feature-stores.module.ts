@@ -80,6 +80,7 @@ import { ElectronEffects } from '../core/electron/electron.effects';
 import { DropboxEffects } from '../imex/sync/dropbox/store/dropbox.effects';
 import { FinishDayBeforeCloseEffects } from '../features/finish-day-before-close/finish-day-before-close.effects';
 import { GitlabIssueEffects } from '../features/issue/providers/gitlab/gitlab-issue.effects';
+import { GitlabLabelSyncEffects } from '../features/issue/providers/gitlab/gitlab-label-sync.effects';
 import { JiraIssueEffects } from '../features/issue/providers/jira/jira-issue.effects';
 import { OpenProjectEffects } from '../features/issue/providers/open-project/open-project.effects';
 import { RedmineEffects } from '../features/issue/providers/redmine/redmine.effects';
@@ -200,7 +201,7 @@ import {
     EffectsModule.forFeature([ElectronEffects]),
     EffectsModule.forFeature([DropboxEffects]),
     EffectsModule.forFeature([FinishDayBeforeCloseEffects]),
-    EffectsModule.forFeature([GitlabIssueEffects]),
+    EffectsModule.forFeature([GitlabIssueEffects, GitlabLabelSyncEffects]),
     EffectsModule.forFeature([JiraIssueEffects]),
     EffectsModule.forFeature([OpenProjectEffects]),
     EffectsModule.forFeature([RedmineEffects]),

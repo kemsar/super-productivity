@@ -191,6 +191,36 @@ export class GitlabApiService {
     );
   }
 
+  /**
+   * PUT /projects/:project/issues/:iid — updates labels via GitLab's
+   * `add_labels` and `remove_labels` comma-separated params. Using these
+   * partial params (rather than a full `labels` replace) is safer when the
+   * remote issue has labels we don't know about: we only touch the delta
+   * the user made in SP. Empty arrays are omitted.
+   */
+  updateIssueLabels$(
+    issueId: string,
+    add: string[],
+    remove: string[],
+    cfg: GitlabCfg,
+  ): Observable<unknown> {
+    const data: Record<string, string> = {};
+    if (add.length > 0) {
+      data.add_labels = add.join(',');
+    }
+    if (remove.length > 0) {
+      data.remove_labels = remove.join(',');
+    }
+    return this._sendRawRequest$(
+      {
+        url: this._issueApiLink(cfg, issueId),
+        method: 'PUT',
+        data,
+      },
+      cfg,
+    );
+  }
+
   getTimeTrackingStats$(
     issueId: string,
     cfg: GitlabCfg,

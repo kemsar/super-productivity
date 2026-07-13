@@ -165,6 +165,14 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
         },
       },
       {
+        key: 'isSyncLabelsAsTags',
+        type: 'checkbox',
+        templateOptions: {
+          label: T.F.GITLAB.FORM.SYNC_LABELS_AS_TAGS,
+          description: T.F.GITLAB.FORM.SYNC_LABELS_AS_TAGS_DESCRIPTION,
+        },
+      },
+      {
         key: 'pollIntervalMinutes',
         type: 'input',
         templateOptions: {

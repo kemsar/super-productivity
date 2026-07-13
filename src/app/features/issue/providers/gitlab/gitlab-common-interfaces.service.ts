@@ -10,6 +10,8 @@ import { GitlabCfg } from './gitlab.model';
 import { GitlabIssue } from './gitlab-issue.model';
 import { truncate } from '../../../../util/truncate';
 import { GITLAB_BASE_URL, GITLAB_POLL_INTERVAL } from './gitlab.const';
+import { TagService } from '../../../tag/tag.service';
+import { TODAY_TAG } from '../../../tag/tag.const';
 
 @Injectable({
   providedIn: 'root',
@@ -17,6 +19,7 @@ import { GITLAB_BASE_URL, GITLAB_POLL_INTERVAL } from './gitlab.const';
 export class GitlabCommonInterfacesService extends BaseIssueProviderService<GitlabCfg> {
   private readonly _gitlabApiService = inject(GitlabApiService);
   private readonly _gitlabGraphqlApiService = inject(GitlabGraphqlApiService);
+  private readonly _tagService = inject(TagService);
   private _cachedCfg?: GitlabCfg;
 
   readonly providerKey = 'GITLAB' as const;
@@ -93,6 +96,89 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     };
   }
 
+  /**
+   * Cfg-aware variant consumed by `IssueService._getAddTaskData` on the
+   * initial-import path. When `cfg.isSyncLabelsAsTags` is on (issue #14),
+   * project the issue's `labels` onto `tagIds` (creating SP tags on demand)
+   * and stamp `issueLastSyncedValues.labels` so the write-side effect can
+   * later diff against the last-known remote label set.
+   */
+  getAddTaskDataForCfg(
+    issue: GitlabIssue,
+    cfg: GitlabCfg,
+  ): Partial<Task> & { title: string } {
+    const base = this.getAddTaskData(issue);
+    if (!cfg.isSyncLabelsAsTags) {
+      return base;
+    }
+    const labels = issue.labels ?? [];
+    return {
+      ...base,
+      tagIds: this._labelsToTagIds(labels),
+      issueLastSyncedValues: { labels: [...labels].sort((a, b) => a.localeCompare(b)) },
+    };
+  }
+
+  override async getFreshDataForIssueTask(task: Task): Promise<{
+    taskChanges: Partial<Task>;
+    issue: IssueData;
+    issueTitle: string;
+  } | null> {
+    const base = await super.getFreshDataForIssueTask(task);
+    if (!task.issueProviderId) {
+      return base;
+    }
+    const cfg = await firstValueFrom(this._getCfgOnce$(task.issueProviderId));
+    if (!cfg.isSyncLabelsAsTags) {
+      return base;
+    }
+
+    // The base method returns null when the remote issue's `updated_at`
+    // hasn't advanced. Labels can change without updated_at bumping on some
+    // GitLab versions, so fetch the issue directly when base bailed out.
+    const issue: GitlabIssue = ((base?.issue as GitlabIssue) ??
+      ((await firstValueFrom(
+        this._apiGetById$(task.issueId!, cfg),
+      )) as GitlabIssue)) as GitlabIssue;
+    if (!issue) {
+      return base;
+    }
+
+    const remoteLabels = [...(issue.labels ?? [])].sort((a, b) => a.localeCompare(b));
+    const lastLabels = this._getLastSyncedLabels(task);
+    const labelsUnchanged =
+      remoteLabels.length === lastLabels.length &&
+      remoteLabels.every((l, i) => l === lastLabels[i]);
+
+    // Nothing changed on either the base fields OR the labels — no-op so we
+    // don't spam an updateTask that would trigger the write-side effect for
+    // no reason.
+    if (!base && labelsUnchanged) {
+      return null;
+    }
+
+    const nextTagIds = this._mergeLabelsIntoExistingTagIds(
+      task.tagIds ?? [],
+      lastLabels,
+      remoteLabels,
+    );
+
+    const changes: Partial<Task> = {
+      ...(base?.taskChanges ?? { issueWasUpdated: true }),
+      tagIds: nextTagIds,
+      issueLastSyncedValues: {
+        ...task.issueLastSyncedValues,
+        labels: remoteLabels,
+      },
+    };
+
+    return {
+      taskChanges: changes,
+      issue,
+      issueTitle: base?.issueTitle ?? this._formatIssueTitleForSnack(issue),
+    };
+  }
+
   async getNewIssuesToAddToBacklog(
     issueProviderId: string,
     _allExistingIssueIds: number[] | string[],
@@ -161,5 +247,91 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
 
   private _formatIssueTitle(issue: GitlabIssue): string {
     return `#${issue.number} ${issue.title}`;
+  }
+
+  // -- label ↔ tag helpers (issue #14) --------------------------------------
+
+  /**
+   * Reads the last-known remote label list stashed on the task by a prior
+   * sync run (see `getFreshDataForIssueTask` / `getAddTaskDataForCfg`).
+   * Returns an empty array when the task has never been synced yet or when
+   * the field is missing/malformed — never throws, so callers can treat a
+   * pristine task as "no labels known" without a special case.
+   */
+  private _getLastSyncedLabels(task: Task): string[] {
+    const raw = task.issueLastSyncedValues?.['labels'];
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw.filter((v): v is string => typeof v === 'string');
+  }
+
+  /**
+   * Maps a list of GitLab label titles to SP tag ids, creating tags that
+   * don't exist yet by title (case-insensitive match). TODAY_TAG is virtual
+   * and must not be added via tagIds (see CLAUDE.md rule #5) — the id
+   * comparison filters it out even if a user has a label literally named
+   * "TODAY".
+   */
+  private _labelsToTagIds(labels: string[]): string[] {
+    if (labels.length === 0) {
+      return [];
+    }
+    const existing = this._tagService.tags();
+    const ids: string[] = [];
+    for (const label of labels) {
+      const trimmed = label.trim();
+      if (!trimmed) continue;
+      const match = existing.find(
+        (t) => t.title.toLowerCase() === trimmed.toLowerCase() && t.id !== TODAY_TAG.id,
+      );
+      if (match) {
+        ids.push(match.id);
+      } else {
+        // addTag returns synchronously with a fresh nanoid — no round-trip
+        // to the store required to keep going with the rest of the list.
+        const newId = this._tagService.addTag({ title: trimmed });
+        ids.push(newId);
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * Merges a fresh set of remote labels into the task's existing tagIds:
+   *   - Drops tag ids that came from labels previously known (i.e. labels in
+   *     `lastLabels` that are no longer in `remoteLabels`).
+   *   - Preserves any other tag ids the user added by hand (or by another
+   *     provider) — they don't correspond to a known GitLab label.
+   *   - Adds tag ids for each new remote label, creating SP tags on demand.
+   *
+   * Case-insensitive title comparison throughout — GitLab treats "Bug" and
+   * "bug" as the same label anyway.
+   */
+  private _mergeLabelsIntoExistingTagIds(
+    existingTagIds: string[],
+    lastLabels: string[],
+    remoteLabels: string[],
+  ): string[] {
+    const removedLabels = new Set(
+      lastLabels
+        .filter((l) => !remoteLabels.some((r) => r.toLowerCase() === l.toLowerCase()))
+        .map((l) => l.toLowerCase()),
+    );
+    const tags = this._tagService.tags();
+    // Preserve tags whose title matches neither a removed label nor a new one
+    // — those are user-added and untouched by the sync.
+    const remoteLower = new Set(remoteLabels.map((l) => l.toLowerCase()));
+    const preserved: string[] = [];
+    for (const tagId of existingTagIds) {
+      if (tagId === TODAY_TAG.id) continue;
+      const tag = tags.find((t) => t.id === tagId);
+      if (!tag) continue;
+      const lower = tag.title.toLowerCase();
+      if (removedLabels.has(lower)) continue;
+      if (remoteLower.has(lower)) continue;
+      preserved.push(tagId);
+    }
+    return [...preserved, ...this._labelsToTagIds(remoteLabels)];
   }
 }
