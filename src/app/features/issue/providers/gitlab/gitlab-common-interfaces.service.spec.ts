@@ -15,8 +15,10 @@ import { createTask } from '../../../tasks/task.test-helper';
 import { Task } from '../../../tasks/task.model';
 import { IssueProviderGitlab } from '../../issue.model';
 import { TagService } from '../../../tag/tag.service';
-import { signal } from '@angular/core';
+import { signal, WritableSignal } from '@angular/core';
 import { Tag } from '../../../tag/tag.model';
+import { MenuTreeService } from '../../../menu-tree/menu-tree.service';
+import { MenuTreeKind, MenuTreeTreeNode } from '../../../menu-tree/store/menu-tree.model';
 
 const ISSUE_PROVIDER_ID = 'gitlab-provider-1';
 const ISSUE_ID = 'project/repo#42';
@@ -119,6 +121,10 @@ describe('GitlabCommonInterfacesService', () => {
     tags: ReturnType<typeof signal<Tag[]>>;
     addTag: jasmine.Spy<(tag: Partial<Tag>) => string>;
   };
+  let menuTreeStub: {
+    tagTree: WritableSignal<MenuTreeTreeNode[]>;
+    setTagTree: jasmine.Spy<(next: MenuTreeTreeNode[]) => void>;
+  };
   let tagIdCounter: number;
 
   beforeEach(() => {
@@ -141,6 +147,7 @@ describe('GitlabCommonInterfacesService', () => {
     // TagService.tags is a computed signal on the real service, so a plain
     // spy method won't satisfy the Signal<> shape. A writable signal-backed
     // stub is enough for the label→tag helpers used by the read side.
+    const tagTreeState = signal<MenuTreeTreeNode[]>([]);
     tagServiceStub = {
       tags: signal<Tag[]>([]),
       addTag: jasmine
@@ -151,8 +158,18 @@ describe('GitlabCommonInterfacesService', () => {
             ...prev,
             { id, title: tag.title ?? '', taskIds: [] } as unknown as Tag,
           ]);
+          // Mirror the real addTag reducer: newly-added tag lands at the
+          // root of the tag tree. The GitLab folder placement then strips
+          // it from root and moves it into the folder.
+          tagTreeState.update((prev) => [...prev, { k: MenuTreeKind.TAG, id }]);
           return id;
         }),
+    };
+    menuTreeStub = {
+      tagTree: tagTreeState,
+      setTagTree: jasmine
+        .createSpy<(next: MenuTreeTreeNode[]) => void>('setTagTree')
+        .and.callFake((next) => tagTreeState.set(next)),
     };
 
     TestBed.configureTestingModule({
@@ -162,6 +179,7 @@ describe('GitlabCommonInterfacesService', () => {
         { provide: GitlabGraphqlApiService, useValue: gitlabGraphqlApiService },
         { provide: IssueProviderService, useValue: issueProviderService },
         { provide: TagService, useValue: tagServiceStub },
+        { provide: MenuTreeService, useValue: menuTreeStub },
       ],
     });
     service = TestBed.inject(GitlabCommonInterfacesService);
@@ -510,6 +528,70 @@ describe('GitlabCommonInterfacesService', () => {
         // Base did update (updated_at advanced), but no tagIds mutations.
         expect(result?.taskChanges.tagIds).toBeUndefined();
         expect(result?.taskChanges.issueLastSyncedValues).toBeUndefined();
+      });
+    });
+
+    describe('GitLab tag folder placement (issue #15)', () => {
+      const findFolder = (
+        tree: MenuTreeTreeNode[],
+        name: string,
+      ): MenuTreeTreeNode | null =>
+        tree.find((n) => n.k === MenuTreeKind.FOLDER && n.name === name) ?? null;
+
+      it('creates a "GitLab" folder and moves new label-tags into it', () => {
+        service.getAddTaskDataForCfg(
+          makeIssueWithLabels(BASE_UPDATED_AT, ['bug', 'ready']),
+          cfgWithLabelSync,
+        );
+
+        const finalTree = menuTreeStub.tagTree();
+        const folder = findFolder(finalTree, 'GitLab');
+        expect(folder).not.toBeNull();
+        expect((folder as { children: unknown[] }).children).toHaveSize(2);
+        // No stray tag nodes at the root — they should all be inside the folder.
+        expect(finalTree.some((n) => n.k === MenuTreeKind.TAG)).toBe(false);
+      });
+
+      it('reuses an existing GitLab folder rather than creating a duplicate', () => {
+        menuTreeStub.tagTree.set([
+          {
+            k: MenuTreeKind.FOLDER,
+            id: 'existing-folder-id',
+            name: 'GitLab',
+            isExpanded: true,
+            children: [],
+          },
+        ]);
+        service.getAddTaskDataForCfg(
+          makeIssueWithLabels(BASE_UPDATED_AT, ['bug']),
+          cfgWithLabelSync,
+        );
+
+        const finalTree = menuTreeStub.tagTree();
+        const folders = finalTree.filter(
+          (n) => n.k === MenuTreeKind.FOLDER && n.name === 'GitLab',
+        );
+        expect(folders).toHaveSize(1);
+        expect(folders[0].id).toBe('existing-folder-id');
+      });
+
+      it('does not move pre-existing SP tags that happened to match a label', () => {
+        // User's "personal" tag lives at root — a label of the same name
+        // shouldn't yank it into the GitLab folder.
+        tagServiceStub.tags.set([
+          { id: 'user-bug', title: 'bug', taskIds: [] } as unknown as Tag,
+        ]);
+        menuTreeStub.tagTree.set([{ k: MenuTreeKind.TAG, id: 'user-bug' }]);
+
+        service.getAddTaskDataForCfg(
+          makeIssueWithLabels(BASE_UPDATED_AT, ['bug']),
+          cfgWithLabelSync,
+        );
+
+        // No GitLab folder was created because no new tag was needed.
+        expect(findFolder(menuTreeStub.tagTree(), 'GitLab')).toBeNull();
+        // User's tag stayed at root.
+        expect(menuTreeStub.tagTree()).toEqual([{ k: MenuTreeKind.TAG, id: 'user-bug' }]);
       });
     });
   });

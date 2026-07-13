@@ -12,6 +12,15 @@ import { truncate } from '../../../../util/truncate';
 import { GITLAB_BASE_URL, GITLAB_POLL_INTERVAL } from './gitlab.const';
 import { TagService } from '../../../tag/tag.service';
 import { TODAY_TAG } from '../../../tag/tag.const';
+import { MenuTreeService } from '../../../menu-tree/menu-tree.service';
+import {
+  MenuTreeFolderNode,
+  MenuTreeKind,
+  MenuTreeTagNode,
+  MenuTreeTreeNode,
+} from '../../../menu-tree/store/menu-tree.model';
+
+const GITLAB_TAG_FOLDER_NAME = 'GitLab';
 
 @Injectable({
   providedIn: 'root',
@@ -20,6 +29,7 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
   private readonly _gitlabApiService = inject(GitlabApiService);
   private readonly _gitlabGraphqlApiService = inject(GitlabGraphqlApiService);
   private readonly _tagService = inject(TagService);
+  private readonly _menuTreeService = inject(MenuTreeService);
   private _cachedCfg?: GitlabCfg;
 
   readonly providerKey = 'GITLAB' as const;
@@ -272,6 +282,10 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
    * and must not be added via tagIds (see CLAUDE.md rule #5) — the id
    * comparison filters it out even if a user has a label literally named
    * "TODAY".
+   *
+   * Newly-created tags are also moved into a shared "GitLab" tag folder
+   * (issue #15) — the folder is created on demand if missing. Pre-existing
+   * tags are left where the user placed them.
    */
   private _labelsToTagIds(labels: string[]): string[] {
     if (labels.length === 0) {
@@ -279,6 +293,7 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     }
     const existing = this._tagService.tags();
     const ids: string[] = [];
+    const newlyCreatedTagIds: string[] = [];
     for (const label of labels) {
       const trimmed = label.trim();
       if (!trimmed) continue;
@@ -292,9 +307,65 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
         // to the store required to keep going with the rest of the list.
         const newId = this._tagService.addTag({ title: trimmed });
         ids.push(newId);
+        newlyCreatedTagIds.push(newId);
       }
     }
+    if (newlyCreatedTagIds.length > 0) {
+      this._placeTagsInGitlabFolder(newlyCreatedTagIds);
+    }
     return ids;
+  }
+
+  /**
+   * Ensures a top-level "GitLab" tag folder exists in the menu tree and
+   * moves the given tag ids into it. One `setTagTree` dispatch even if we
+   * just created N tags — the reducer's `addTag` handler drops each new
+   * tag into tagTree root, so we strip those root placements and re-insert
+   * into the folder in a single atomic tree update.
+   *
+   * Idempotent: safe to call with a mix of pre-placed and new tag ids;
+   * they end up in the folder either way (and get removed from any other
+   * location they happened to occupy, so no duplicates).
+   */
+  private _placeTagsInGitlabFolder(tagIdsToMove: string[]): void {
+    const currentTree = this._menuTreeService.tagTree();
+    const newTagIds = new Set(tagIdsToMove);
+
+    let folderNode: MenuTreeFolderNode | null = null;
+    for (const node of currentTree) {
+      if (node.k === MenuTreeKind.FOLDER && node.name === GITLAB_TAG_FOLDER_NAME) {
+        folderNode = node;
+        break;
+      }
+    }
+
+    const strippedTree = _stripTagsFromTree(currentTree, newTagIds);
+    const newTagNodes: MenuTreeTagNode[] = tagIdsToMove.map((id) => ({
+      k: MenuTreeKind.TAG,
+      id,
+    }));
+
+    let nextTree: MenuTreeTreeNode[];
+    if (folderNode) {
+      const updatedFolder: MenuTreeFolderNode = {
+        ...folderNode,
+        children: [..._filterOutTagNodes(folderNode.children, newTagIds), ...newTagNodes],
+      };
+      nextTree = strippedTree.map((n) =>
+        n.k === MenuTreeKind.FOLDER && n.id === folderNode!.id ? updatedFolder : n,
+      );
+    } else {
+      const newFolder: MenuTreeFolderNode = {
+        k: MenuTreeKind.FOLDER,
+        id: _createFolderId(),
+        name: GITLAB_TAG_FOLDER_NAME,
+        isExpanded: true,
+        children: newTagNodes,
+      };
+      nextTree = [...strippedTree, newFolder];
+    }
+
+    this._menuTreeService.setTagTree(nextTree);
   }
 
   /**
@@ -335,3 +406,37 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     return [...preserved, ...this._labelsToTagIds(remoteLabels)];
   }
 }
+
+// -- module-scoped tree helpers (issue #15) ---------------------------------
+
+/**
+ * Walks the tag tree and strips any TAG node whose id is in `tagIds` — used
+ * before re-inserting those tags into the "GitLab" folder so we don't leave
+ * a duplicate at root (where the tag reducer parked it initially) or in a
+ * stale prior placement.
+ */
+const _stripTagsFromTree = (
+  tree: MenuTreeTreeNode[],
+  tagIds: Set<string>,
+): MenuTreeTreeNode[] => {
+  return tree
+    .filter((n) => !(n.k === MenuTreeKind.TAG && tagIds.has(n.id)))
+    .map((n) =>
+      n.k === MenuTreeKind.FOLDER
+        ? { ...n, children: _stripTagsFromTree(n.children, tagIds) }
+        : n,
+    );
+};
+
+const _filterOutTagNodes = (
+  children: MenuTreeTreeNode[],
+  tagIds: Set<string>,
+): MenuTreeTreeNode[] =>
+  children.filter((n) => !(n.k === MenuTreeKind.TAG && tagIds.has(n.id)));
+
+const _createFolderId = (): string => {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return `folder-${Math.random().toString(16).slice(2)}`;
+};
