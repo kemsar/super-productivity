@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, inject, Input } from '@angular/core';
 import { MatDialog } from '@angular/material/dialog';
+import { firstValueFrom } from 'rxjs';
 import { take } from 'rxjs/operators';
 
 import { DialogConfirmComponent } from '../../ui/dialog-confirm/dialog-confirm.component';
@@ -16,8 +17,10 @@ import { MenuTreeService } from '../../features/menu-tree/menu-tree.service';
 import {
   MenuTreeFolderNode,
   MenuTreeKind,
+  MenuTreeTreeNode,
 } from '../../features/menu-tree/store/menu-tree.model';
 import { TagService } from '../../features/tag/tag.service';
+import { ProjectService } from '../../features/project/project.service';
 import { Router } from '@angular/router';
 
 @Component({
@@ -33,6 +36,7 @@ export class FolderContextMenuComponent {
   private readonly _translateService = inject(TranslateService);
   private readonly _menuTreeService = inject(MenuTreeService);
   private readonly _tagService = inject(TagService);
+  private readonly _projectService = inject(ProjectService);
   private readonly _router = inject(Router);
 
   @Input() folderId!: string;
@@ -75,38 +79,135 @@ export class FolderContextMenuComponent {
       });
   }
 
-  deleteFolder(): void {
+  async deleteFolder(): Promise<void> {
     const folder = this._loadFolder(this.folderId);
     if (!folder) return;
 
-    const confirmKey =
-      this.treeKind === MenuTreeKind.PROJECT
-        ? T.F.PROJECT_FOLDER.CONFIRM_DELETE
-        : T.F.TAG_FOLDER.CONFIRM_DELETE;
+    const isProject = this.treeKind === MenuTreeKind.PROJECT;
+    const cleanId = this._cleanFolderId(this.folderId);
 
-    const message = this._translateService.instant(confirmKey, {
-      title: folder.name,
-    });
+    const contents = this._collectFolderContents(folder);
+    const totalItems = contents.projectIds.length + contents.tagIds.length;
 
-    const dialogRef = this._matDialog.open(DialogConfirmComponent, {
-      restoreFocus: true,
-      data: { message },
-    });
+    // Empty folder → single confirm, current behavior (issue #12).
+    if (totalItems === 0) {
+      const confirmed = await firstValueFrom(
+        this._matDialog
+          .open(DialogConfirmComponent, {
+            restoreFocus: true,
+            data: {
+              message: this._translateService.instant(
+                isProject
+                  ? T.F.PROJECT_FOLDER.CONFIRM_DELETE
+                  : T.F.TAG_FOLDER.CONFIRM_DELETE,
+                { title: folder.name },
+              ),
+            },
+          })
+          .afterClosed(),
+      );
+      if (confirmed) {
+        if (isProject) {
+          this._menuTreeService.deleteFolderFromProject(cleanId);
+        } else {
+          this._menuTreeService.deleteFolderFromTag(cleanId);
+        }
+      }
+      return;
+    }
 
-    dialogRef
-      .afterClosed()
-      .pipe(take(1))
-      .subscribe((result: boolean) => {
-        if (result) {
-          const cleanId = this._cleanFolderId(this.folderId);
+    // Non-empty folder → two-step: confirm delete, then choose fate of contents.
+    const confirmed = await firstValueFrom(
+      this._matDialog
+        .open(DialogConfirmComponent, {
+          restoreFocus: true,
+          data: {
+            message: this._translateService.instant(
+              isProject
+                ? T.F.PROJECT_FOLDER.CONFIRM_DELETE_WITH_CONTENTS
+                : T.F.TAG_FOLDER.CONFIRM_DELETE_WITH_CONTENTS,
+              { title: folder.name, count: totalItems },
+            ),
+          },
+        })
+        .afterClosed(),
+    );
+    if (!confirmed) {
+      return;
+    }
 
-          if (this.treeKind === MenuTreeKind.PROJECT) {
-            this._menuTreeService.deleteFolderFromProject(cleanId);
-          } else {
-            this._menuTreeService.deleteFolderFromTag(cleanId);
+    const deleteContents = await firstValueFrom(
+      this._matDialog
+        .open(DialogConfirmComponent, {
+          restoreFocus: true,
+          data: {
+            cancelTxt: isProject
+              ? T.F.PROJECT_FOLDER.MOVE_CONTENTS_TO_ROOT
+              : T.F.TAG_FOLDER.MOVE_CONTENTS_TO_ROOT,
+            okTxt: isProject
+              ? T.F.PROJECT_FOLDER.DELETE_CONTENTS
+              : T.F.TAG_FOLDER.DELETE_CONTENTS,
+            message: this._translateService.instant(
+              isProject
+                ? T.F.PROJECT_FOLDER.CONFIRM_DELETE_CONTENTS
+                : T.F.TAG_FOLDER.CONFIRM_DELETE_CONTENTS,
+              { count: totalItems },
+            ),
+          },
+        })
+        .afterClosed(),
+    );
+
+    if (deleteContents) {
+      // Delete every project/tag inside the folder (recursively) BEFORE removing
+      // the folder itself. Projects go through ProjectService.remove which
+      // dispatches TaskSharedActions.deleteProject — that already cleans up
+      // tasks + notes. Bulk-dispatch shape (rule #6): await setTimeout(0) after
+      // the loop so the folder-delete reducer sees the settled tree.
+      if (isProject) {
+        for (const projectId of contents.projectIds) {
+          const project = await firstValueFrom(
+            this._projectService.getByIdOnce$(projectId),
+          );
+          if (project) {
+            await this._projectService.remove(project);
           }
         }
-      });
+      } else if (contents.tagIds.length > 0) {
+        this._tagService.deleteTags(contents.tagIds);
+      }
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    if (isProject) {
+      this._menuTreeService.deleteFolderFromProject(cleanId);
+    } else {
+      this._menuTreeService.deleteFolderFromTag(cleanId);
+    }
+  }
+
+  /** Recursively walks a folder subtree and collects the ids of every
+   *  project/tag it contains. Nested folders don't get their own ids returned
+   *  because folder deletion is handled by the reducer's filter step. */
+  private _collectFolderContents(folder: MenuTreeFolderNode): {
+    projectIds: string[];
+    tagIds: string[];
+  } {
+    const projectIds: string[] = [];
+    const tagIds: string[] = [];
+    const walk = (nodes: MenuTreeTreeNode[]): void => {
+      for (const node of nodes) {
+        if (node.k === MenuTreeKind.PROJECT) {
+          projectIds.push(node.id);
+        } else if (node.k === MenuTreeKind.TAG) {
+          tagIds.push(node.id);
+        } else if (node.k === MenuTreeKind.FOLDER) {
+          walk(node.children);
+        }
+      }
+    };
+    walk(folder.children);
+    return { projectIds, tagIds };
   }
 
   addSubfolder(): void {

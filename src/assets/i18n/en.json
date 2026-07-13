@@ -456,7 +456,12 @@
         "SOURCE_PROJECT": "Project",
         "SUBMIT_TIMELOGS": "Submit timelogs to GitLab",
         "SUBMIT_TIMELOGS_DESCRIPTION": "Show time tracking dialog after clicking on \"Finish Day\"",
-        "TOKEN": "Access Token"
+        "TOKEN": "Access Token",
+        "DEFAULT_PROJECT_TREE_ROUTED": "Auto-route to associated tree-import project",
+        "DEFAULT_PROJECT_TREE_ROUTED_HINT": "With this option selected, each imported issue lands in the SP project mapped to its GitLab path. Pick a specific project below to override and send every issue to that one instead.",
+        "TREE_IMPORT_CHECKBOX": "Generate SP tree from group on save",
+        "TREE_IMPORT_ERR": "Failed to import GitLab group tree. See console for details.",
+        "TREE_IMPORT_HINT": "When saved, walks the group's subgroups and projects and creates matching SP folders and projects. Safe to leave checked across saves — existing entries are reused."
       },
       "FORM_SECTION": {
         "HELP": "<p>Here you can configure Super Productivity to list open GitLab (either its the online version or a self-hosted instance) issues for a specific project in the task creation panel in the daily planning view. They will be listed as suggestions and will provide a link to the issue as well as more information about it.</p><p>In addition, you can automatically import all open issues.</p>"
@@ -569,6 +574,10 @@
         "ADVANCED_CONFIG": "Advanced Config",
         "CONNECTED": "Connected",
         "DELETE_CONFIRM": "Are you sure you want to delete this issue provider? Deleting it means that <strong>all previously imported issue tasks will loose their reference</strong>. This cannot be undone!",
+        "DELETE_CONFIRM_WITH_TASKS": "Delete this issue provider? <strong>{{count}} imported task(s)</strong> are linked to it. You'll be asked next whether to keep or delete those tasks.",
+        "DELETE_TASKS_ALSO": "Delete tasks too",
+        "DELETE_TASKS_KEEP": "Keep tasks",
+        "DELETE_TASKS_PROMPT": "Also delete the <strong>{{count}} task(s)</strong> imported from this provider? This only removes them from Super Productivity — the underlying issues on the remote service are not touched. Choose \"Keep tasks\" to leave them in place (their issue link will be cleared).",
         "DISCONNECT": "Disconnect",
         "EDIT_TITLE": "Edit {{title}} Config",
         "LOAD_OPTIONS": "Load Options",
@@ -1060,6 +1069,10 @@
     },
     "PROJECT_FOLDER": {
       "CONFIRM_DELETE": "Are you sure you want to delete the folder \"{{title}}\"? All projects in this folder will be moved to the root level.",
+      "CONFIRM_DELETE_WITH_CONTENTS": "Delete the folder \"{{title}}\"? It contains <strong>{{count}} project(s)</strong>. You'll be asked next whether to keep or delete them.",
+      "CONFIRM_DELETE_CONTENTS": "What should happen to the <strong>{{count}} project(s)</strong> in this folder? Choose \"Move to root\" to keep them (and their tasks), or \"Delete contents\" to remove the projects and all their tasks. Deletion only removes them from Super Productivity — issues on any linked remote service are not touched.",
+      "MOVE_CONTENTS_TO_ROOT": "Move to root",
+      "DELETE_CONTENTS": "Delete contents",
       "DIALOG": {
         "CREATE_TITLE": "Create folder",
         "EDIT_TITLE": "Edit folder",
@@ -1736,6 +1749,10 @@
     },
     "TAG_FOLDER": {
       "CONFIRM_DELETE": "Are you sure you want to delete the folder \"{{title}}\"? All tags in this folder will be moved to the top level.",
+      "CONFIRM_DELETE_WITH_CONTENTS": "Delete the folder \"{{title}}\"? It contains <strong>{{count}} tag(s)</strong>. You'll be asked next whether to keep or delete them.",
+      "CONFIRM_DELETE_CONTENTS": "What should happen to the <strong>{{count}} tag(s)</strong> in this folder? Choose \"Move to root\" to keep them, or \"Delete contents\" to remove the tags.",
+      "MOVE_CONTENTS_TO_ROOT": "Move to root",
+      "DELETE_CONTENTS": "Delete contents",
       "DIALOG": {
         "CREATE_TITLE": "Create folder",
         "EDIT_TITLE": "Edit folder",

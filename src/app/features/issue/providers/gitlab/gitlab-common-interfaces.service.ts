@@ -93,6 +93,30 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     };
   }
 
+  /**
+   * Cfg-aware variant consumed by `IssueService._getAddTaskData`. Routes each
+   * incoming issue to the SP project mapped to its GitLab full path when a
+   * tree-import mapping exists on the group provider (issue #10). Falls back
+   * to the plain `getAddTaskData` shape when unmapped so single-project and
+   * all-assigned providers behave exactly as before.
+   */
+  getAddTaskDataForCfg(
+    issue: GitlabIssue,
+    cfg: GitlabCfg,
+  ): Partial<Task> & { title: string } {
+    const base = this.getAddTaskData(issue);
+    const mapping = cfg.treeImportMapping;
+    if (!mapping) {
+      return base;
+    }
+    const projectPath = issue.id.split('#')[0];
+    const entry = mapping[projectPath];
+    if (!entry) {
+      return base;
+    }
+    return { ...base, projectId: entry.spProjectId };
+  }
+
   async getNewIssuesToAddToBacklog(
     issueProviderId: string,
     _allExistingIssueIds: number[] | string[],

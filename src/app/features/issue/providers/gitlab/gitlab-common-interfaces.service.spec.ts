@@ -331,4 +331,63 @@ describe('GitlabCommonInterfacesService', () => {
       expect(gitlabApiService.getById$).toHaveBeenCalled();
     });
   });
+
+  describe('getAddTaskDataForCfg (tree-import routing, #10)', () => {
+    it('leaves projectId unset when the cfg has no tree-import mapping', () => {
+      const result = service.getAddTaskDataForCfg(makeIssue(BASE_UPDATED_AT), BASE_CFG);
+      expect(result.projectId).toBeUndefined();
+    });
+
+    it('routes issues to the mapped SP project when the mapping matches', () => {
+      const cfgWithMapping: GitlabCfg = {
+        ...BASE_CFG,
+        sourceMode: 'group',
+        group: 'project',
+        treeImportMapping: {
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          'project/repo': { spProjectId: 'sp-project-x', gitlabProjectId: 1 },
+        },
+      };
+      const result = service.getAddTaskDataForCfg(
+        makeIssue(BASE_UPDATED_AT),
+        cfgWithMapping,
+      );
+      expect(result.projectId).toBe('sp-project-x');
+    });
+
+    it('leaves projectId unset when the mapping has no entry for the issue path', () => {
+      const cfgWithMapping: GitlabCfg = {
+        ...BASE_CFG,
+        sourceMode: 'group',
+        group: 'project',
+        treeImportMapping: {
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          'other/repo': { spProjectId: 'sp-project-y', gitlabProjectId: 2 },
+        },
+      };
+      const result = service.getAddTaskDataForCfg(
+        makeIssue(BASE_UPDATED_AT),
+        cfgWithMapping,
+      );
+      expect(result.projectId).toBeUndefined();
+    });
+
+    it('carries the base title and issue fields through', () => {
+      const cfgWithMapping: GitlabCfg = {
+        ...BASE_CFG,
+        sourceMode: 'group',
+        group: 'project',
+        treeImportMapping: {
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          'project/repo': { spProjectId: 'sp-project-x', gitlabProjectId: 1 },
+        },
+      };
+      const result = service.getAddTaskDataForCfg(
+        makeIssue(BASE_UPDATED_AT),
+        cfgWithMapping,
+      );
+      expect(result.title).toBe('#42 GitLab issue');
+      expect(result.issueId).toBe(ISSUE_ID);
+    });
+  });
 });

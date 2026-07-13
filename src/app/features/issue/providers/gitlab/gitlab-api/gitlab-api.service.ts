@@ -11,7 +11,12 @@ import { EMPTY, forkJoin, Observable, of } from 'rxjs';
 import { SnackService } from 'src/app/core/snack/snack.service';
 
 import { GitlabCfg, GitlabSourceMode } from '../gitlab.model';
-import { GitlabOriginalComment, GitlabOriginalIssue } from './gitlab-api-responses';
+import {
+  GitlabOriginalComment,
+  GitlabOriginalGroupProject,
+  GitlabOriginalIssue,
+  GitlabOriginalSubgroup,
+} from './gitlab-api-responses';
 import { GITLAB_API_BASE_URL } from '../gitlab.const';
 import { T } from 'src/app/t.const';
 import {
@@ -163,6 +168,49 @@ export class GitlabApiService {
       },
       cfg,
     ).pipe(take(1));
+  }
+
+  /**
+   * Lists direct subgroups of the configured group. Callers recurse manually
+   * to build the full tree (per-level enables partial-failure tolerance —
+   * we can still create SP folders for the levels that loaded successfully).
+   */
+  getGroupSubgroups$(
+    groupIdOrPath: string,
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalSubgroup[]> {
+    const groupURL = assertTruthy(groupIdOrPath).toString().replace(/\//gi, '%2F');
+    return this._sendPaginatedRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/groups/${groupURL}/subgroups?order_by=path&sort=asc`,
+      },
+      cfg,
+    ).pipe(
+      take(1),
+      map((groups: GitlabOriginalSubgroup[]) => groups || []),
+    );
+  }
+
+  /**
+   * Lists projects directly under the given group. `include_subgroups=false`
+   * because the recursive walk is driven by getGroupSubgroups$ — this keeps
+   * the "which project belongs to which subgroup" information intact for the
+   * SP folder-tree build (which the flat subgroup-inclusive endpoint loses).
+   */
+  getGroupProjects$(
+    groupIdOrPath: string,
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalGroupProject[]> {
+    const groupURL = assertTruthy(groupIdOrPath).toString().replace(/\//gi, '%2F');
+    return this._sendPaginatedRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/groups/${groupURL}/projects?archived=false&order_by=path&sort=asc&include_subgroups=false`,
+      },
+      cfg,
+    ).pipe(
+      take(1),
+      map((projects: GitlabOriginalGroupProject[]) => projects || []),
+    );
   }
 
   addTimeSpentToIssue$(

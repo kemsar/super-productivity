@@ -256,6 +256,13 @@
           ></nextcloud-deck-additional-cfg>
           <!-- -->
         }
+        @case ('GITLAB') {
+          <gitlab-additional-cfg
+            [cfg]="model"
+            (modelChange)="customCfgCmpSave($event)"
+          ></gitlab-additional-cfg>
+          <!-- -->
+        }
       }
     }
   </mat-dialog-content>
