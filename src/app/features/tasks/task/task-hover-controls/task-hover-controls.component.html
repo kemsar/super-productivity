@@ -76,3 +76,13 @@
     }
   </button>
 }
+<button
+  (click)="parent.startTitleEdit(); $event.stopPropagation()"
+  title="{{ T.F.TASK.CMP.EDIT_TITLE | translate }}"
+  [attr.aria-label]="T.F.TASK.CMP.EDIT_TITLE | translate"
+  class="ico-btn edit-title-btn"
+  color=""
+  mat-icon-button
+>
+  <mat-icon>edit</mat-icon>
+</button>

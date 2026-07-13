@@ -38,6 +38,11 @@ import { SubmitTrigger } from 'src/app/features/tasks/task.model';
     ['[class.is-focused]']: 'isFocused()',
     ['[class.is-editing]']: 'isEditing()',
     ['[class.is-readonly]']: 'readonly()',
+    // Callers that opt out of click-to-edit get a pointer cursor on the title
+    // (issue #13: task rows use the click to open the detail panel, so a text
+    // I-beam is misleading). Kept as a host class rather than a style binding
+    // so downstream selectors can hook in too.
+    ['[class.is-click-passive]']: '!clickToEdit()',
   },
 })
 export class TaskTitleComponent implements OnDestroy {
@@ -49,6 +54,14 @@ export class TaskTitleComponent implements OnDestroy {
 
   private readonly _isMentionListShown = signal(false);
   readonly readonly = input<boolean>(false); // When true, disables editing and only displays the value
+  /**
+   * When false, clicking the title does not enter edit mode — callers who
+   * want the click to do something else (e.g. open the task detail panel
+   * from a task row, issue #13) can still trigger edit imperatively via
+   * `focusInput()` on the viewChild. Default `true` preserves the original
+   * click-to-edit behaviour for every existing consumer.
+   */
+  readonly clickToEdit = input<boolean>(true);
 
   // Reset value only if user is not currently editing (prevents overwriting edits during sync)
   @Input() set resetToLastExternalValueTrigger(value: unknown) {
@@ -120,8 +133,10 @@ export class TaskTitleComponent implements OnDestroy {
       return;
     }
 
-    // Don't enter edit mode if readonly or clicking the textarea (already editing)
-    if (this.readonly() || target?.tagName === 'TEXTAREA') {
+    // Don't enter edit mode if readonly, clicking the textarea (already
+    // editing), or if the caller opted out of click-to-edit (issue #13 —
+    // task rows open the detail panel on title click instead).
+    if (this.readonly() || !this.clickToEdit() || target?.tagName === 'TEXTAREA') {
       return;
     }
 
