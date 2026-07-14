@@ -680,6 +680,18 @@ export class IssueService {
       ...additional,
     };
 
+    // Provider services can supply a per-issue projectId override via
+    // `getAddTaskDataForCfg` (e.g. GitLab tree-import routing, issue #10).
+    // taskDefaults would clobber it with the coarser `defaultProjectId ||
+    // activeWorkContextId` fallback, so re-apply the per-issue value when the
+    // provider config has no explicit defaultProjectId of its own.
+    const providerRoutedProjectId = (
+      additionalFromProviderIssueService as Partial<TaskCopy>
+    ).projectId;
+    if (providerRoutedProjectId && !providerCfg.defaultProjectId) {
+      (taskData as Partial<TaskCopy>).projectId = providerRoutedProjectId;
+    }
+
     // If a precise start time is provided by the provider, avoid setting dueDay as well
     if ((taskData as Partial<TaskCopy>).dueWithTime) {
       (taskData as Partial<TaskCopy>).dueDay = undefined;

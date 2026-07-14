@@ -108,25 +108,47 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
 
   /**
    * Cfg-aware variant consumed by `IssueService._getAddTaskData` on the
-   * initial-import path. When `cfg.isSyncLabelsAsTags` is on (issue #14),
-   * project the issue's `labels` onto `tagIds` (creating SP tags on demand)
-   * and stamp `issueLastSyncedValues.labels` so the write-side effect can
-   * later diff against the last-known remote label set.
+   * initial-import path. Composes two orthogonal projections onto the base
+   * task data:
+   *
+   * - Tree-import routing (issue #10): route to the mapped SP project when
+   *   `cfg.treeImportMapping` has an entry for the issue's GitLab path.
+   * - Label sync (issue #14): project `labels` onto `tagIds` and stamp
+   *   `issueLastSyncedValues.labels` so the write-side effect has a
+   *   baseline to diff against.
+   *
+   * Both are opt-in and independent — either can be enabled without the
+   * other.
    */
   getAddTaskDataForCfg(
     issue: GitlabIssue,
     cfg: GitlabCfg,
   ): Partial<Task> & { title: string } {
-    const base = this.getAddTaskData(issue);
-    if (!cfg.isSyncLabelsAsTags) {
-      return base;
+    let out: Partial<Task> & { title: string } = this.getAddTaskData(issue);
+
+    // Route to mapped SP project via tree-import mapping when present.
+    const mapping = cfg.treeImportMapping;
+    if (mapping) {
+      const projectPath = issue.id.split('#')[0];
+      const entry = mapping[projectPath];
+      if (entry) {
+        out = { ...out, projectId: entry.spProjectId };
+      }
     }
-    const labels = issue.labels ?? [];
-    return {
-      ...base,
-      tagIds: this._labelsToTagIds(labels),
-      issueLastSyncedValues: { labels: [...labels].sort((a, b) => a.localeCompare(b)) },
-    };
+
+    // Project labels onto tagIds + stamp last-synced baseline.
+    if (cfg.isSyncLabelsAsTags) {
+      const labels = issue.labels ?? [];
+      out = {
+        ...out,
+        tagIds: this._labelsToTagIds(labels),
+        issueLastSyncedValues: {
+          labels: [...labels].sort((a, b) => a.localeCompare(b)),
+        },
+      };
+    }
+
+    return out;
   }
 
   override async getFreshDataForIssueTask(task: Task): Promise<{

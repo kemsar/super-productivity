@@ -23,6 +23,26 @@ import { getErrorTxt } from '../../../util/get-error-text';
 import { DELAY_BEFORE_ISSUE_POLLING } from '../issue.const';
 import { IssueLog } from '../../../core/log';
 import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { GITLAB_TYPE } from '../issue.const';
+import { GitlabCfg } from '../providers/gitlab/gitlab.model';
+
+/**
+ * GitLab tree-import group providers (issue #10) route each polled issue to
+ * an SP project via `treeImportMapping` instead of having a single
+ * `defaultProjectId`. Callers use this to relax the "must have
+ * defaultProjectId" polling gate for them, and — in the `whenProjectOpen`
+ * path — to fire the poll when any mapped SP project is the active context.
+ */
+const _gitlabTreeImportSpProjectIds = (provider: IssueProvider): string[] => {
+  if (provider.issueProviderKey !== GITLAB_TYPE) {
+    return [];
+  }
+  const mapping = (provider as unknown as GitlabCfg).treeImportMapping;
+  if (!mapping) {
+    return [];
+  }
+  return Object.values(mapping).map((e) => e.spProjectId);
+};
 
 @Injectable()
 export class PollToBacklogEffects {
@@ -60,7 +80,8 @@ export class PollToBacklogEffects {
             switchMap((enabledProviders: IssueProvider[]) => {
               const matchingProviders = enabledProviders.filter(
                 (provider) =>
-                  provider.defaultProjectId === pId &&
+                  (provider.defaultProjectId === pId ||
+                    _gitlabTreeImportSpProjectIds(provider).includes(pId)) &&
                   provider.isAutoAddToBacklog &&
                   provider.pollingMode !== 'always' &&
                   !this._pluginRegistry.getUseAgendaView(provider.issueProviderKey) &&
@@ -96,7 +117,8 @@ export class PollToBacklogEffects {
                 (provider) =>
                   provider.pollingMode === 'always' &&
                   provider.isAutoAddToBacklog &&
-                  !!provider.defaultProjectId &&
+                  (!!provider.defaultProjectId ||
+                    _gitlabTreeImportSpProjectIds(provider).length > 0) &&
                   !this._pluginRegistry.getUseAgendaView(provider.issueProviderKey) &&
                   this._issueService.getPollInterval(provider.issueProviderKey) > 0,
               );

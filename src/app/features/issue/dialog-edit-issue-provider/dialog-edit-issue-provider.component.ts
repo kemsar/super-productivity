@@ -4,6 +4,7 @@ import {
   Component,
   inject,
   signal,
+  viewChild,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import {
@@ -65,6 +66,7 @@ import { IS_NATIVE_PLATFORM } from '../../../util/is-native-platform';
 // Trello is now a plugin — board selection is a dynamic `loadOptions` select field
 // ClickUp is now a plugin — no built-in config component needed
 import { NextcloudDeckAdditionalCfgComponent } from '../providers/nextcloud-deck/nextcloud-deck-additional-cfg.component';
+import { GitlabAdditionalCfgComponent } from '../providers/gitlab/gitlab-additional-cfg/gitlab-additional-cfg.component';
 import { TaskService } from '../../tasks/task.service';
 import { firstValueFrom } from 'rxjs';
 import { TaskSharedActions } from '../../../root-store/meta/task-shared.actions';
@@ -96,6 +98,7 @@ type OptionsLoadState = 'idle' | 'loading' | 'loaded' | 'empty' | 'failed';
     MatIcon,
     MatDialogTitle,
     NextcloudDeckAdditionalCfgComponent,
+    GitlabAdditionalCfgComponent,
     ChipListInputComponent,
   ],
   templateUrl: './dialog-edit-issue-provider.component.html',
@@ -172,6 +175,11 @@ export class DialogEditIssueProviderComponent {
 
   oauthButtons = this._getOAuthButtons();
 
+  // View child on the GitLab-specific additional-cfg panel. `submit()` consults
+  // it so the "generate SP tree on save" checkbox can run the import as part of
+  // the same user gesture (issue #10 feedback: replace the standalone button).
+  private readonly _gitlabAdditionalCfg = viewChild(GitlabAdditionalCfgComponent);
+
   private _matDialogRef: MatDialogRef<DialogEditIssueProviderComponent> =
     inject(MatDialogRef);
 
@@ -215,27 +223,39 @@ export class DialogEditIssueProviderComponent {
     });
   }
 
-  submit(isSkipClose = false): void {
-    if (this.form.valid) {
-      if (this.isEdit) {
-        this._store.dispatch(
-          IssueProviderActions.updateIssueProvider({
-            issueProvider: {
-              id: this.issueProvider!.id,
-              changes: this.model as IssueProvider,
-            },
-          }),
-        );
-      } else {
-        this._store.dispatch(
-          IssueProviderActions.addIssueProvider({
-            issueProvider: this.model as IssueProvider,
-          }),
-        );
-      }
-      if (!isSkipClose) {
-        this._matDialogRef.close(this.model);
-      }
+  async submit(isSkipClose = false): Promise<void> {
+    if (!this.form.valid) {
+      return;
+    }
+    if (this.isEdit) {
+      this._store.dispatch(
+        IssueProviderActions.updateIssueProvider({
+          issueProvider: {
+            id: this.issueProvider!.id,
+            changes: this.model as IssueProvider,
+          },
+        }),
+      );
+    } else {
+      this._store.dispatch(
+        IssueProviderActions.addIssueProvider({
+          issueProvider: this.model as IssueProvider,
+        }),
+      );
+    }
+
+    // Run the GitLab tree-import as part of the same user gesture when the
+    // additional-cfg checkbox is set. Await the store settle first so the
+    // import's own updateIssueProvider (mapping persistence) applies against
+    // the just-added/updated provider entry, not before it.
+    const gitlabCfgCmp = this._gitlabAdditionalCfg();
+    if (gitlabCfgCmp?.willGenerateOnSave()) {
+      await new Promise((r) => setTimeout(r, 0));
+      await gitlabCfgCmp.runImport();
+    }
+
+    if (!isSkipClose) {
+      this._matDialogRef.close(this.model);
     }
   }
 
@@ -311,36 +331,82 @@ export class DialogEditIssueProviderComponent {
     }
   }
 
-  remove(): void {
-    this._matDialog
-      .open(DialogConfirmComponent, {
-        restoreFocus: true,
-        data: {
-          cancelTxt: T.G.CANCEL,
-          okTxt: T.G.DELETE,
-          message: T.F.ISSUE.DIALOG.DELETE_CONFIRM,
-        },
-      })
-      .afterClosed()
-      .subscribe(async (isConfirm: boolean) => {
-        if (isConfirm) {
-          const providerId = this.issueProvider!.id;
+  async remove(): Promise<void> {
+    const providerId = this.issueProvider!.id;
 
-          // Gather task IDs to unlink - this ensures atomic sync
-          const allTasks = await firstValueFrom(this._taskService.allTasks$);
-          const taskIdsToUnlink = allTasks
-            .filter((task) => task.issueProviderId === providerId)
-            .map((task) => task.id);
+    // Look up affected tasks first so the confirm dialog can show the count and
+    // offer a "delete tasks with provider" branch (issue #11). This is the same
+    // scan the original single-confirm flow did after the confirm; hoisting it
+    // is cheap (few hundred tasks max in a real user's state).
+    const allTasks = await firstValueFrom(this._taskService.allTasks$);
+    const affectedTaskIds = allTasks
+      .filter((task) => task.issueProviderId === providerId)
+      .map((task) => task.id);
 
-          this._store.dispatch(
-            TaskSharedActions.deleteIssueProvider({
-              issueProviderId: providerId,
-              taskIdsToUnlink,
-            }),
-          );
-          this._matDialogRef.close();
-        }
-      });
+    const confirmDelete = await firstValueFrom(
+      this._matDialog
+        .open(DialogConfirmComponent, {
+          restoreFocus: true,
+          data: {
+            cancelTxt: T.G.CANCEL,
+            okTxt: T.G.DELETE,
+            message:
+              affectedTaskIds.length > 0
+                ? T.F.ISSUE.DIALOG.DELETE_CONFIRM_WITH_TASKS
+                : T.F.ISSUE.DIALOG.DELETE_CONFIRM,
+            translateParams: { count: affectedTaskIds.length },
+          },
+        })
+        .afterClosed(),
+    );
+    if (!confirmDelete) {
+      return;
+    }
+
+    // Second prompt only when tasks are actually affected. Two chained
+    // DialogConfirmComponent instances instead of teaching a shared dialog a
+    // third button — keeps this feature-local and matches how sync-form.const
+    // already chains confirms.
+    let alsoDeleteTasks = false;
+    if (affectedTaskIds.length > 0) {
+      alsoDeleteTasks = !!(await firstValueFrom(
+        this._matDialog
+          .open(DialogConfirmComponent, {
+            restoreFocus: true,
+            data: {
+              cancelTxt: T.F.ISSUE.DIALOG.DELETE_TASKS_KEEP,
+              okTxt: T.F.ISSUE.DIALOG.DELETE_TASKS_ALSO,
+              message: T.F.ISSUE.DIALOG.DELETE_TASKS_PROMPT,
+              translateParams: { count: affectedTaskIds.length },
+            },
+          })
+          .afterClosed(),
+      ));
+    }
+
+    if (alsoDeleteTasks) {
+      // Bulk delete tasks first. `removeMultipleTasks` primes the deleted-issue
+      // sidecar so the deleteIssueOnBulkTaskDelete$ effect can react. Since the
+      // tasks are gone, taskIdsToUnlink for the provider delete is empty.
+      this._taskService.removeMultipleTasks(affectedTaskIds);
+      // Settle the reducer before dispatching the provider delete — same
+      // bulk-dispatch pattern as tree-import (rule #6).
+      await new Promise((r) => setTimeout(r, 0));
+      this._store.dispatch(
+        TaskSharedActions.deleteIssueProvider({
+          issueProviderId: providerId,
+          taskIdsToUnlink: [],
+        }),
+      );
+    } else {
+      this._store.dispatch(
+        TaskSharedActions.deleteIssueProvider({
+          issueProviderId: providerId,
+          taskIdsToUnlink: affectedTaskIds,
+        }),
+      );
+    }
+    this._matDialogRef.close();
   }
 
   changeEnabled(isEnabled: boolean): void {
