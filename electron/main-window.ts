@@ -359,7 +359,7 @@ export const createWindow = async ({
   initWinEventListeners(app);
 
   if (IS_MAC) {
-    createMenu(quitApp);
+    createMenu(app, quitApp);
   } else {
     mainWin.setMenu(null);
     mainWin.setMenuBarVisibility(false);
@@ -562,7 +562,7 @@ function initWinEventListeners(app: Electron.App): void {
 }
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
-function createMenu(quitApp: () => void): void {
+function createMenu(app: App, quitApp: () => void): void {
   // Create application menu to enable copy & pasting on MacOS
   const menuTpl: MenuItemConstructorOptions[] = [
     {
@@ -574,6 +574,16 @@ function createMenu(quitApp: () => void): void {
         { role: 'hideOthers' },
         { role: 'unhide' },
         { type: 'separator' },
+        {
+          // GitKraken-style "Restart" — queues a relaunch and then closes
+          // this instance via the same shutdown path as Quit so any
+          // before-quit cleanup (state save, sync flush) still runs.
+          label: 'Restart',
+          click: () => {
+            app.relaunch();
+            closeWinAndQuit(quitApp);
+          },
+        },
         {
           label: 'Quit',
           accelerator: 'CmdOrCtrl+Q',
