@@ -500,6 +500,8 @@
         "SUBMIT_TIMELOGS_DESCRIPTION": "Show time tracking dialog after clicking on \"Finish Day\"",
         "SYNC_LABELS_AS_TAGS": "Sync GitLab labels ↔ SP tags",
         "SYNC_LABELS_AS_TAGS_DESCRIPTION": "When on, GitLab issue labels appear as SP tags on the imported task (created on demand), and changes to those tags push back to GitLab as add/remove label calls. Off by default.",
+        "BOT_AUTHOR_IDS": "Bot user IDs (comma-separated)",
+        "BOT_AUTHOR_IDS_DESCRIPTION": "GitLab user IDs to exclude when computing 'last human comment' for the age view (e.g. 31559171, 9127544). Should match the digest email's BOT_IDS.",
         "DEFAULT_PROJECT_TREE_ROUTED": "Auto-route to associated tree-import project",
         "DEFAULT_PROJECT_TREE_ROUTED_HINT": "With this option selected, each imported issue lands in the SP project mapped to its GitLab path. Pick a specific project below to override and send every issue to that one instead.",
         "TREE_IMPORT_CHECKBOX": "Generate SP tree from group on save",

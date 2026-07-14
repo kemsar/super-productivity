@@ -22,6 +22,22 @@ import {
 
 const GITLAB_TAG_FOLDER_NAME = 'GitLab';
 
+/**
+ * Parse the CSV bot-ids string on `GitlabCfg` into a Set for O(1) lookup.
+ * Silently drops non-numeric fragments so a stray space or trailing comma
+ * doesn't disable the filter — the digest script's tokenizer has the same
+ * forgiving semantics.
+ */
+const _parseBotAuthorIds = (csv: string | undefined): Set<number> => {
+  if (!csv) return new Set();
+  const out = new Set<number>();
+  for (const raw of csv.split(',')) {
+    const n = Number(raw.trim());
+    if (Number.isFinite(n) && n > 0) out.add(n);
+  }
+  return out;
+};
+
 @Injectable({
   providedIn: 'root',
 })
@@ -94,16 +110,45 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     ).then((result) => result ?? '');
   }
 
-  getAddTaskData(issue: GitlabIssue): Partial<Task> & { title: string } {
+  getAddTaskData(issue: GitlabIssue, cfg?: GitlabCfg): Partial<Task> & { title: string } {
     return {
       title: this._formatIssueTitle(issue),
       issuePoints: issue.weight,
       issueWasUpdated: false,
       issueLastUpdated: new Date(issue.updated_at).getTime(),
+      lastUserNoteAt: this._computeLastUserNoteAt(issue, cfg),
       issueId: issue.id,
       isDone: issue.state === 'closed',
       dueDay: issue.due_date || undefined,
     };
+  }
+
+  /**
+   * Newest `updated_at` among non-system, non-bot comments on the issue.
+   * Returns `null` when there are no qualifying comments so the aging util
+   * can fall back to `issueLastUpdated ?? created` cleanly.
+   *
+   * `system=true` comments are GitLab-generated (label/state/MR-linkage
+   * notes) — always excluded. Bot-authored regular comments are filtered
+   * via `cfg.botAuthorIds`, mirroring the digest email's `BOT_IDS` env.
+   */
+  private _computeLastUserNoteAt(
+    issue: GitlabIssue,
+    cfg: GitlabCfg | undefined,
+  ): number | null {
+    const comments = issue.comments ?? [];
+    if (comments.length === 0) {
+      return null;
+    }
+    const botIds = _parseBotAuthorIds(cfg?.botAuthorIds);
+    let maxMs = 0;
+    for (const c of comments) {
+      if (c.system) continue;
+      if (botIds.has(c.author?.id ?? -1)) continue;
+      const ms = new Date(c.updated_at).getTime();
+      if (ms > maxMs) maxMs = ms;
+    }
+    return maxMs > 0 ? maxMs : null;
   }
 
   /**
@@ -124,7 +169,7 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     issue: GitlabIssue,
     cfg: GitlabCfg,
   ): Partial<Task> & { title: string } {
-    let out: Partial<Task> & { title: string } = this.getAddTaskData(issue);
+    let out: Partial<Task> & { title: string } = this.getAddTaskData(issue, cfg);
 
     // Route to mapped SP project via tree-import mapping when present.
     const mapping = cfg.treeImportMapping;
@@ -161,6 +206,16 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       return base;
     }
     const cfg = await firstValueFrom(this._getCfgOnce$(task.issueProviderId));
+
+    // The base fills lastUserNoteAt via `getAddTaskData(issue)` — but that
+    // path doesn't know about `cfg.botAuthorIds`. When base returns changes,
+    // recompute with cfg so bot-authored notes don't slip through and inflate
+    // the "last human comment" timestamp.
+    if (base && cfg.botAuthorIds) {
+      const filtered = this._computeLastUserNoteAt(base.issue as GitlabIssue, cfg);
+      base.taskChanges = { ...base.taskChanges, lastUserNoteAt: filtered };
+    }
+
     if (!cfg.isSyncLabelsAsTags) {
       return base;
     }

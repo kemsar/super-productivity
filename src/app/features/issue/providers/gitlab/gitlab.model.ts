@@ -42,6 +42,18 @@ export interface GitlabCfg extends BaseIssueProviderCfg {
    * projects into the existing folder structure instead of duplicating it.
    */
   treeImportFolderMapping?: Record<string, string>;
+  /**
+   * Comma-separated GitLab user IDs to exclude when computing "last human
+   * comment" for the aging-issues view (issue #18). Stored as a plain
+   * string (e.g. "31559171, 9127544") so the config form can be a
+   * standard text input — parsed to a Set<number> at read time. Mirrors
+   * the `BOT_IDS` env var in `automation/scripts/daily_digest.sh` so
+   * SP's age buckets can match the daily digest email exactly. Optional
+   * — with an empty list we still strip GitLab-generated `system: true`
+   * notes (which the digest doesn't, but SP's GraphQL path already filters
+   * them out anyway).
+   */
+  botAuthorIds?: string;
 }
 
 export interface GitlabTreeImportEntry {

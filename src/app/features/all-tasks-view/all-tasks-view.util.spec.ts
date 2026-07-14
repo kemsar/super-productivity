@@ -255,6 +255,18 @@ describe('all-tasks-view.util', () => {
         const groups = groupTasks([fresh, stale], 'age', ageCtx, 'desc');
         expect(groups.map((g) => g.label)).toEqual(['Stale >30 days', 'Fresh (≤7 days)']);
       });
+
+      it('prefers lastUserNoteAt over issueLastUpdated', () => {
+        // Bot bumped updated_at yesterday, but the last human comment was
+        // 20 days ago — bucket should read "Stale 15–30 days", not "Fresh".
+        const botTouched = t({
+          id: 'bot-touched',
+          lastUserNoteAt: daysAgo(20),
+          issueLastUpdated: daysAgo(1),
+        });
+        const groups = groupTasks([botTouched], 'age', ageCtx);
+        expect(groups[0].label).toBe('Stale 15–30 days');
+      });
     });
   });
 });

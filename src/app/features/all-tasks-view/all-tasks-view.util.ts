@@ -63,13 +63,21 @@ export const filterTasks = <T extends Task>(tasks: T[], filter: AllTasksFilter):
 };
 
 /**
- * "Age" source for grouping/sorting: falls back through remote-issue update
- * → local task creation. Returns undefined if neither exists (rare — the
- * unknown-age bucket catches those). This drives the aging-issues view
- * (issue #18) so tasks age off both remote silence AND local staleness.
+ * "Age" source for grouping/sorting. Priority:
+ *   1. `lastUserNoteAt` — most recent human comment on the linked issue
+ *      (populated by GitLab sync; see gitlab-common-interfaces.service).
+ *      This is the correct signal for "when did a human last engage" and
+ *      matches what the CU automation daily-digest email buckets on.
+ *   2. `issueLastUpdated` — GitLab's `updated_at`, which conflates label
+ *      changes, bot activity, and system events. Serves both as a fallback
+ *      for tasks without comments and for providers that don't populate
+ *      `lastUserNoteAt`.
+ *   3. `created` — local task creation, so native (non-issue) tasks still
+ *      have a bucket to fall into.
+ * Returns undefined only when none of the three is set.
  */
 export const ageSourceMs = (task: Task): number | undefined =>
-  task.issueLastUpdated ?? task.created ?? undefined;
+  task.lastUserNoteAt ?? task.issueLastUpdated ?? task.created ?? undefined;
 
 const _pickSortValue = (task: Task, field: AllTasksSortField): unknown => {
   switch (field) {

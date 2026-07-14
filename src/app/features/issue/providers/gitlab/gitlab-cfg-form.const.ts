@@ -228,6 +228,18 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
           min: 1,
         },
       },
+      // Bot IDs for the aging-issues view (issue #18). Stored as a CSV
+      // string on cfg so the form can be a plain text input; the GitLab
+      // common-interfaces service parses it at read time. Users can paste
+      // the same value they'd use for the digest's BOT_IDS env.
+      {
+        key: 'botAuthorIds',
+        type: 'input',
+        templateOptions: {
+          label: T.F.GITLAB.FORM.BOT_AUTHOR_IDS,
+          description: T.F.GITLAB.FORM.BOT_AUTHOR_IDS_DESCRIPTION,
+        },
+      },
     ],
   },
 ];

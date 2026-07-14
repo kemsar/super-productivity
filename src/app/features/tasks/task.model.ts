@@ -68,6 +68,15 @@ export interface IssueFieldsForTask {
   issueTimeTracked?: IssueTaskTimeTracked;
   issuePoints?: number;
   issueLastSyncedValues?: Record<string, unknown>;
+  /**
+   * Timestamp (ms) of the most recent non-system, non-bot comment on the
+   * linked remote issue. Provider-populated during sync (currently GitLab
+   * only). Drives the aging-issues view (#18) so buckets reflect the last
+   * *human* interaction rather than automated `updated_at` bumps.
+   * Undefined for tasks without comments or for providers that don't
+   * emit it — the aging util falls back to `issueLastUpdated ?? created`.
+   */
+  lastUserNoteAt?: number | null;
 }
 
 // Extend the plugin Task type with app-specific fields
