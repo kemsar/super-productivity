@@ -84,6 +84,13 @@ export const APP_ROUTES: Routes = [
     canActivate: [FocusOverlayOpenGuard],
   },
   {
+    path: 'all-tasks',
+    loadComponent: () =>
+      import('./routes/pages.routes').then((m) => m.AllTasksViewComponent),
+    data: { page: 'all-tasks' },
+    canActivate: [FocusOverlayOpenGuard],
+  },
+  {
     path: 'habits',
     loadComponent: () =>
       import('./routes/pages.routes').then((m) => m.HabitPageComponent),

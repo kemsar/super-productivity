@@ -103,6 +103,26 @@
     }
   },
   "F": {
+    "ALL_TASKS_VIEW": {
+      "EMPTY": "No tasks match your filter.",
+      "FILTER": {
+        "DONE_STATE": "Done state",
+        "HAS_NOTES": "Has notes",
+        "ISSUE_TYPE": "Issue provider",
+        "ISSUE_WAS_UPDATED": "Updated by sync",
+        "PROJECTS": "Projects",
+        "SEARCH_CLEAR": "Clear search",
+        "SEARCH_TEXT": "Search title / notes",
+        "TAGS_EXCLUDE": "Tags — exclude",
+        "TAGS_INCLUDE": "Tags — include"
+      },
+      "RESET": "Reset filter + sort",
+      "RESULT_COUNT": "{{count}} of {{total}} tasks",
+      "SORT": {
+        "FIELD": "Sort by",
+        "TOGGLE_DIR": "Toggle sort direction"
+      }
+    },
     "ANDROID": {
       "FOREGROUND_SERVICE_START_FAILED_FOCUS": "Android blocked the persistent focus mode notification. The timer continues in the app, but background alerts may be unavailable. Check notification permission and battery/background restrictions.",
       "FOREGROUND_SERVICE_START_FAILED_TRACKING": "Android blocked the persistent time tracking notification. Time is still tracked in the app, but background recovery may be unavailable. Check notification permission and battery/background restrictions.",
@@ -2785,6 +2805,7 @@
     "ADD_NEW_TASK": "Add new Task",
     "ADD_SECTION": "Add Section",
     "ALL_PLANNED_LIST": "Upcoming",
+    "ALL_TASKS": "All tasks",
     "BOARDS": "Boards",
     "COPY_TASK_LIST_MARKDOWN": "Copy to clipboard",
     "CREATE_PROJECT": "Create project",

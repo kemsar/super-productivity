@@ -436,6 +436,16 @@ export class MagicNavConfigService {
       });
     }
 
+    // "All Tasks" filtered view (issue #16). Always available for now; a
+    // feature-config gate can be added later if the surface needs opt-in.
+    items.push({
+      type: 'route',
+      id: 'all-tasks',
+      label: T.MH.ALL_TASKS,
+      icon: 'filter_list',
+      route: '/all-tasks',
+    });
+
     if (this.isHabitsEnabled()) {
       items.push({
         type: 'route',

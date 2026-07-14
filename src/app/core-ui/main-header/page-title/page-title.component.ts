@@ -282,6 +282,7 @@ export class PageTitleComponent {
     [/habits$/, T.MH.HABITS],
     [/search$/, T.MH.SEARCH],
     [/scheduled-list$/, T.MH.ALL_PLANNED_LIST],
+    [/all-tasks$/, T.MH.ALL_TASKS],
     [/donate$/, T.MH.DONATE],
     [/config$/, T.PS.GLOBAL_SETTINGS],
     [/archived-projects$/, T.MH.ARCHIVED_PROJECTS],

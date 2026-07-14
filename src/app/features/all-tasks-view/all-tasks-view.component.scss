@@ -1,0 +1,54 @@
+.all-tasks-view {
+  padding: var(--s3);
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+  margin-bottom: var(--s3);
+  background: var(--card-bg);
+  border-radius: var(--card-border-radius);
+  box-shadow: var(--whiteframe-shadow-1dp);
+}
+
+.filter-row {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+  flex-wrap: wrap;
+
+  mat-form-field {
+    min-width: 180px;
+    flex: 1 1 200px;
+    max-width: 320px;
+  }
+
+  .search-field {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+}
+
+.sort-row {
+  .result-count {
+    margin-left: auto;
+    color: var(--text-color-muted);
+    font-size: 13px;
+  }
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-color-muted);
+  padding: var(--s4);
+}

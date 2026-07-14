@@ -6,6 +6,7 @@ export { ScheduledListPageComponent } from '../pages/scheduled-list-page/schedul
 export { PlannerComponent } from '../features/planner/planner.component';
 export { ScheduleComponent } from '../features/schedule/schedule/schedule.component';
 export { BoardsComponent } from '../features/boards/boards.component';
+export { AllTasksViewComponent } from '../features/all-tasks-view/all-tasks-view.component';
 export { HabitPageComponent } from '../pages/habit-page/habit-page.component';
 export { DonatePageComponent } from '../pages/donate-page/donate-page.component';
 export { ContrastTestComponent } from '../pages/contrast-test/contrast-test.component';
