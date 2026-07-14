@@ -1,5 +1,10 @@
 import { Task } from '../tasks/task.model';
-import { AllTasksFilter, AllTasksSort, AllTasksSortField } from './all-tasks-view.model';
+import {
+  AllTasksFilter,
+  AllTasksGroupBy,
+  AllTasksSort,
+  AllTasksSortField,
+} from './all-tasks-view.model';
 
 /**
  * Apply an `AllTasksFilter` to a task list. Pure function so it composes well
@@ -92,4 +97,107 @@ export const sortTasks = <T extends Task>(tasks: T[], sort: AllTasksSort): T[] =
     }
     return 0;
   });
+};
+
+/**
+ * A single collapsible section rendered in the grouped list view. `key` is
+ * a stable string that survives filter/sort re-renders (used as the
+ * `track` in the template), `label` is displayed, `tasks` is already
+ * filtered + sorted by the pipeline that ran before grouping.
+ */
+export interface TaskGroup<T extends Task> {
+  key: string;
+  label: string;
+  tasks: T[];
+}
+
+export interface TaskGroupingContext {
+  /** SP project id → title. Used for the `'project'` grouping mode. */
+  projectTitle: (projectId: string | null | undefined) => string;
+  /** GitLab/plugin issue key → humanized label. Used for `'issueType'`. */
+  issueTypeLabel: (issueType: string | null | undefined) => string;
+  /** Label shown when the group value is missing (e.g. no due date). */
+  noValueLabel: string;
+}
+
+const _pickGroupBucket = (
+  task: Task,
+  groupBy: AllTasksGroupBy,
+  ctx: TaskGroupingContext,
+): { key: string; label: string; sortKey: string } => {
+  switch (groupBy) {
+    case 'project': {
+      const id = task.projectId ?? '';
+      return {
+        key: `project:${id || '__none'}`,
+        label: id ? ctx.projectTitle(id) : ctx.noValueLabel,
+        sortKey: (id ? ctx.projectTitle(id) : `￿${ctx.noValueLabel}`).toLowerCase(),
+      };
+    }
+    case 'issueType': {
+      const it = task.issueType ?? '';
+      return {
+        key: `issueType:${it || '__none'}`,
+        label: it ? ctx.issueTypeLabel(it) : ctx.noValueLabel,
+        sortKey: (it ? ctx.issueTypeLabel(it) : `￿${ctx.noValueLabel}`).toLowerCase(),
+      };
+    }
+    case 'dueDay': {
+      const d = task.dueDay ?? '';
+      return {
+        key: `dueDay:${d || '__none'}`,
+        label: d || ctx.noValueLabel,
+        // Chronological ascending; no-due bucket sorts to the end via ￿.
+        sortKey: d || `￿${ctx.noValueLabel}`,
+      };
+    }
+    case 'isDone': {
+      const done = !!task.isDone;
+      return {
+        key: `isDone:${done ? '1' : '0'}`,
+        label: done ? 'Done' : 'Not done',
+        // Not-done first (0), done second (1).
+        sortKey: done ? '1' : '0',
+      };
+    }
+    case 'none':
+      return { key: 'all', label: '', sortKey: '' };
+  }
+};
+
+/**
+ * Bucket a task list by the given dimension. `'none'` returns a single
+ * unnamed group containing every task, in the caller-provided order.
+ *
+ * The context (project titles, issue-type labels) is passed in rather than
+ * imported so this util stays testable without spinning up the store —
+ * callers wire it once from selectors/registry signals.
+ */
+export const groupTasks = <T extends Task>(
+  tasks: T[],
+  groupBy: AllTasksGroupBy,
+  ctx: TaskGroupingContext,
+): TaskGroup<T>[] => {
+  if (groupBy === 'none') {
+    return [{ key: 'all', label: '', tasks: [...tasks] }];
+  }
+
+  const bucketMap = new Map<string, { label: string; sortKey: string; tasks: T[] }>();
+  for (const task of tasks) {
+    const bucket = _pickGroupBucket(task, groupBy, ctx);
+    const existing = bucketMap.get(bucket.key);
+    if (existing) {
+      existing.tasks.push(task);
+    } else {
+      bucketMap.set(bucket.key, {
+        label: bucket.label,
+        sortKey: bucket.sortKey,
+        tasks: [task],
+      });
+    }
+  }
+
+  return [...bucketMap.entries()]
+    .sort(([, a], [, b]) => a.sortKey.localeCompare(b.sortKey))
+    .map(([key, v]) => ({ key, label: v.label, tasks: v.tasks }));
 };

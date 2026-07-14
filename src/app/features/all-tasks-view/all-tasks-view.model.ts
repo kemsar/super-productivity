@@ -66,3 +66,15 @@ export const DEFAULT_ALL_TASKS_SORT: AllTasksSort = {
   field: 'issueLastUpdated',
   dir: 'desc',
 };
+
+/**
+ * Group-by dimensions for the flat list. `'none'` renders the list ungrouped
+ * (Phase 1 behaviour). `'tag'` is deliberately absent for v1 because a task
+ * can belong to multiple tags — a first-membership rule would surprise users
+ * and true multi-group rendering means the same task shows up in every one
+ * of its tags. Revisit in Phase 3 (saved views) once we have a real use case
+ * to shape the tradeoff.
+ */
+export type AllTasksGroupBy = 'none' | 'project' | 'issueType' | 'dueDay' | 'isDone';
+
+export const DEFAULT_ALL_TASKS_GROUP_BY: AllTasksGroupBy = 'none';

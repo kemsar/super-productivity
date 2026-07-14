@@ -26,13 +26,21 @@ import { selectAllTagsWithoutMyDay } from '../tag/store/tag.reducer';
 import { ISSUE_PROVIDER_TYPES, ISSUE_PROVIDER_HUMANIZED } from '../issue/issue.const';
 import {
   AllTasksFilter,
+  AllTasksGroupBy,
   AllTasksIssueTypeFilter,
   AllTasksSort,
   AllTasksSortField,
   DEFAULT_ALL_TASKS_FILTER,
+  DEFAULT_ALL_TASKS_GROUP_BY,
   DEFAULT_ALL_TASKS_SORT,
 } from './all-tasks-view.model';
-import { filterTasks, sortTasks } from './all-tasks-view.util';
+import {
+  filterTasks,
+  groupTasks,
+  sortTasks,
+  TaskGroup,
+  TaskGroupingContext,
+} from './all-tasks-view.util';
 
 /**
  * Phase 1 of the "All Tasks" cross-project filtered view (issue #16).
@@ -70,6 +78,13 @@ export class AllTasksViewComponent {
 
   filter = signal<AllTasksFilter>(DEFAULT_ALL_TASKS_FILTER);
   sort = signal<AllTasksSort>(DEFAULT_ALL_TASKS_SORT);
+  groupBy = signal<AllTasksGroupBy>(DEFAULT_ALL_TASKS_GROUP_BY);
+  /**
+   * Collapsed-group state, keyed by `TaskGroup.key`. Kept local to the
+   * component (per-visit) — persistence follows in Phase 3 alongside saved
+   * custom views. Undefined = open (default).
+   */
+  private readonly _collapsedGroups = signal<Record<string, boolean>>({});
 
   readonly allTasks = toSignal(this._store.select(selectAllTasksWithSubTasks), {
     initialValue: [] as TaskWithSubTasks[],
@@ -84,6 +99,33 @@ export class AllTasksViewComponent {
   readonly visibleTasks = computed<TaskWithSubTasks[]>(() =>
     sortTasks(filterTasks(this.allTasks(), this.filter()), this.sort()),
   );
+
+  private readonly _groupingContext = computed<TaskGroupingContext>(() => {
+    const projects = this.allProjects();
+    return {
+      projectTitle: (id) => (id && projects.find((p) => p.id === id)?.title) || id || '',
+      issueTypeLabel: (it) =>
+        (it &&
+          this.ISSUE_PROVIDER_HUMANIZED[
+            it as keyof typeof this.ISSUE_PROVIDER_HUMANIZED
+          ]) ||
+        it ||
+        '',
+      noValueLabel: '—',
+    };
+  });
+
+  readonly groups = computed<TaskGroup<TaskWithSubTasks>[]>(() =>
+    groupTasks(this.visibleTasks(), this.groupBy(), this._groupingContext()),
+  );
+
+  isGroupCollapsed(key: string): boolean {
+    return !!this._collapsedGroups()[key];
+  }
+
+  toggleGroup(key: string): void {
+    this._collapsedGroups.update((prev) => ({ ...prev, [key]: !prev[key] }));
+  }
 
   readonly SORT_FIELDS: AllTasksSortField[] = [
     'issueLastUpdated',
@@ -102,6 +144,14 @@ export class AllTasksViewComponent {
     timeEstimate: 'Time estimate',
     issueProviderId: 'Issue provider',
   };
+
+  readonly GROUP_BY_OPTIONS: { value: AllTasksGroupBy; label: string }[] = [
+    { value: 'none', label: 'None' },
+    { value: 'project', label: 'Project' },
+    { value: 'issueType', label: 'Issue provider' },
+    { value: 'dueDay', label: 'Due date' },
+    { value: 'isDone', label: 'Done state' },
+  ];
 
   readonly ISSUE_TYPE_OPTIONS: { value: AllTasksIssueTypeFilter; label: string }[] = [
     { value: 'any', label: 'Any' },
@@ -153,12 +203,26 @@ export class AllTasksViewComponent {
     this.sort.update((prev) => ({ ...prev, dir: prev.dir === 'asc' ? 'desc' : 'asc' }));
   }
 
+  setGroupBy(v: AllTasksGroupBy): void {
+    this.groupBy.set(v);
+    // Reset collapsed-state on group-by change — the previous keys don't
+    // apply once buckets recompute, and open-by-default is the sane starting
+    // point after any regrouping.
+    this._collapsedGroups.set({});
+  }
+
   resetFilter(): void {
     this.filter.set(DEFAULT_ALL_TASKS_FILTER);
     this.sort.set(DEFAULT_ALL_TASKS_SORT);
+    this.groupBy.set(DEFAULT_ALL_TASKS_GROUP_BY);
+    this._collapsedGroups.set({});
   }
 
   trackByTaskId(_index: number, task: TaskWithSubTasks): string {
     return task.id;
+  }
+
+  trackByGroupKey(_index: number, group: TaskGroup<TaskWithSubTasks>): string {
+    return group.key;
   }
 }

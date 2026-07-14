@@ -116,6 +116,7 @@
         "TAGS_EXCLUDE": "Tags — exclude",
         "TAGS_INCLUDE": "Tags — include"
       },
+      "GROUP_BY": "Group by",
       "RESET": "Reset filter + sort",
       "RESULT_COUNT": "{{count}} of {{total}} tasks",
       "SORT": {

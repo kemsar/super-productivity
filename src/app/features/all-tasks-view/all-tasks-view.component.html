@@ -136,6 +136,18 @@
         <mat-icon>{{ s.dir === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
       </button>
 
+      <mat-form-field appearance="outline">
+        <mat-label>{{ T.F.ALL_TASKS_VIEW.GROUP_BY | translate }}</mat-label>
+        <mat-select
+          [value]="groupBy()"
+          (selectionChange)="setGroupBy($event.value)"
+        >
+          @for (opt of GROUP_BY_OPTIONS; track opt.value) {
+            <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
       <button
         mat-icon-button
         type="button"
@@ -159,9 +171,31 @@
       <p class="empty-state">
         {{ T.F.ALL_TASKS_VIEW.EMPTY | translate }}
       </p>
-    } @else {
-      @for (task of visible; track trackByTaskId($index, task)) {
+    } @else if (groupBy() === 'none') {
+      @for (task of groups()[0].tasks; track trackByTaskId($index, task)) {
         <task [task]="task"></task>
+      }
+    } @else {
+      @for (group of groups(); track trackByGroupKey($index, group)) {
+        <section class="task-group">
+          <button
+            class="task-group-header"
+            type="button"
+            (click)="toggleGroup(group.key)"
+            [attr.aria-expanded]="!isGroupCollapsed(group.key)"
+          >
+            <mat-icon class="chevron">{{
+              isGroupCollapsed(group.key) ? 'chevron_right' : 'expand_more'
+            }}</mat-icon>
+            <span class="task-group-label">{{ group.label }}</span>
+            <span class="task-group-count">{{ group.tasks.length }}</span>
+          </button>
+          @if (!isGroupCollapsed(group.key)) {
+            @for (task of group.tasks; track trackByTaskId($index, task)) {
+              <task [task]="task"></task>
+            }
+          }
+        </section>
       }
     }
   </div>
