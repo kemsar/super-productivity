@@ -3,7 +3,7 @@
 @let visible = visibleTasks();
 <div class="all-tasks-view">
   <section class="filter-bar">
-    <div class="filter-row">
+    <div class="filter-row filters-header">
       <mat-form-field
         appearance="outline"
         class="search-field"
@@ -29,90 +29,106 @@
           </button>
         }
       </mat-form-field>
-    </div>
 
-    <div class="filter-row">
-      <mat-checkbox
-        [checked]="f.issueWasUpdatedOnly"
-        (change)="setIssueWasUpdatedOnly($event.checked)"
+      <button
+        mat-stroked-button
+        type="button"
+        class="filters-toggle"
+        (click)="toggleFiltersExpanded()"
+        [attr.aria-expanded]="isFiltersExpanded()"
       >
-        {{ T.F.ALL_TASKS_VIEW.FILTER.ISSUE_WAS_UPDATED | translate }}
-      </mat-checkbox>
-
-      <mat-checkbox
-        [checked]="f.hasNotesOnly"
-        (change)="setHasNotesOnly($event.checked)"
-      >
-        {{ T.F.ALL_TASKS_VIEW.FILTER.HAS_NOTES | translate }}
-      </mat-checkbox>
+        <mat-icon>{{ isFiltersExpanded() ? 'expand_less' : 'expand_more' }}</mat-icon>
+        <span>{{ T.F.ALL_TASKS_VIEW.FILTERS_TOGGLE | translate }}</span>
+        @if (activeFilterCount() > 0) {
+          <span class="filter-count-badge">{{ activeFilterCount() }}</span>
+        }
+      </button>
     </div>
 
-    <div class="filter-row">
-      <mat-form-field appearance="outline">
-        <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.DONE_STATE | translate }}</mat-label>
-        <mat-select
-          [value]="f.doneFilter"
-          (selectionChange)="setDoneFilter($event.value)"
+    @if (isFiltersExpanded()) {
+      <div class="filter-row">
+        <mat-checkbox
+          [checked]="f.issueWasUpdatedOnly"
+          (change)="setIssueWasUpdatedOnly($event.checked)"
         >
-          <mat-option value="undone">Undone</mat-option>
-          <mat-option value="done">Done</mat-option>
-          <mat-option value="any">Any</mat-option>
-        </mat-select>
-      </mat-form-field>
+          {{ T.F.ALL_TASKS_VIEW.FILTER.ISSUE_WAS_UPDATED | translate }}
+        </mat-checkbox>
 
-      <mat-form-field appearance="outline">
-        <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.ISSUE_TYPE | translate }}</mat-label>
-        <mat-select
-          [value]="f.issueTypeFilter"
-          (selectionChange)="setIssueTypeFilter($event.value)"
+        <mat-checkbox
+          [checked]="f.hasNotesOnly"
+          (change)="setHasNotesOnly($event.checked)"
         >
-          @for (opt of ISSUE_TYPE_OPTIONS; track opt.value) {
-            <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
+          {{ T.F.ALL_TASKS_VIEW.FILTER.HAS_NOTES | translate }}
+        </mat-checkbox>
+      </div>
 
-      <mat-form-field appearance="outline">
-        <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.PROJECTS | translate }}</mat-label>
-        <mat-select
-          multiple
-          [value]="f.projectIds ?? []"
-          (selectionChange)="setProjectIds($event.value.length ? $event.value : null)"
-        >
-          @for (p of allProjects(); track p.id) {
-            <mat-option [value]="p.id">{{ p.title }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
-    </div>
+      <div class="filter-row">
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.DONE_STATE | translate }}</mat-label>
+          <mat-select
+            [value]="f.doneFilter"
+            (selectionChange)="setDoneFilter($event.value)"
+          >
+            <mat-option value="undone">Undone</mat-option>
+            <mat-option value="done">Done</mat-option>
+            <mat-option value="any">Any</mat-option>
+          </mat-select>
+        </mat-form-field>
 
-    <div class="filter-row">
-      <mat-form-field appearance="outline">
-        <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.TAGS_INCLUDE | translate }}</mat-label>
-        <mat-select
-          multiple
-          [value]="f.includedTagIds"
-          (selectionChange)="setIncludedTagIds($event.value)"
-        >
-          @for (tag of allTags(); track tag.id) {
-            <mat-option [value]="tag.id">{{ tag.title }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.ISSUE_TYPE | translate }}</mat-label>
+          <mat-select
+            [value]="f.issueTypeFilter"
+            (selectionChange)="setIssueTypeFilter($event.value)"
+          >
+            @for (opt of ISSUE_TYPE_OPTIONS; track opt.value) {
+              <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
 
-      <mat-form-field appearance="outline">
-        <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.TAGS_EXCLUDE | translate }}</mat-label>
-        <mat-select
-          multiple
-          [value]="f.excludedTagIds"
-          (selectionChange)="setExcludedTagIds($event.value)"
-        >
-          @for (tag of allTags(); track tag.id) {
-            <mat-option [value]="tag.id">{{ tag.title }}</mat-option>
-          }
-        </mat-select>
-      </mat-form-field>
-    </div>
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.PROJECTS | translate }}</mat-label>
+          <mat-select
+            multiple
+            [value]="f.projectIds ?? []"
+            (selectionChange)="setProjectIds($event.value.length ? $event.value : null)"
+          >
+            @for (p of allProjects(); track p.id) {
+              <mat-option [value]="p.id">{{ p.title }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <div class="filter-row">
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.TAGS_INCLUDE | translate }}</mat-label>
+          <mat-select
+            multiple
+            [value]="f.includedTagIds"
+            (selectionChange)="setIncludedTagIds($event.value)"
+          >
+            @for (tag of allTags(); track tag.id) {
+              <mat-option [value]="tag.id">{{ tag.title }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.TAGS_EXCLUDE | translate }}</mat-label>
+          <mat-select
+            multiple
+            [value]="f.excludedTagIds"
+            (selectionChange)="setExcludedTagIds($event.value)"
+          >
+            @for (tag of allTags(); track tag.id) {
+              <mat-option [value]="tag.id">{{ tag.title }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+      </div>
+    }
 
     <div class="filter-row sort-row">
       <mat-form-field appearance="outline">

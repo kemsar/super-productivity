@@ -7,10 +7,9 @@ import {
   inject,
   signal,
 } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { ActivatedRoute, Router } from '@angular/router';
 import { MatDialog } from '@angular/material/dialog';
-import { toSignal } from '@angular/core/rxjs-interop';
 import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { Store } from '@ngrx/store';
@@ -53,6 +52,11 @@ import {
   TaskGroup,
   TaskGroupingContext,
 } from './all-tasks-view.util';
+
+/** Per-device preference — remembers whether the extra-filters panel is
+ *  expanded across reloads. Not synced (mirrors the pattern used for the
+ *  project/tag nav-tree collapse state, `LS.IS_PROJECT_LIST_EXPANDED`). */
+const ALL_TASKS_FILTERS_EXPANDED_KEY = 'sp_all_tasks_filters_expanded_v1';
 
 /**
  * Phase 1 of the "All Tasks" cross-project filtered view (issue #16).
@@ -103,6 +107,15 @@ export class AllTasksViewComponent {
   filter = signal<AllTasksFilter>(DEFAULT_ALL_TASKS_FILTER);
   sort = signal<AllTasksSort>(DEFAULT_ALL_TASKS_SORT);
   groupBy = signal<AllTasksGroupBy>(DEFAULT_ALL_TASKS_GROUP_BY);
+  /**
+   * "Extra filters" panel expanded state — collapsed default so the vertical
+   * footprint on the /all-tasks page stays compact (search + sort + group
+   * are always visible). Persisted per-device to localStorage so a habitual
+   * setting sticks across restarts.
+   */
+  isFiltersExpanded = signal<boolean>(
+    localStorage.getItem(ALL_TASKS_FILTERS_EXPANDED_KEY) === '1',
+  );
   /**
    * Collapsed-group state, keyed by `TaskGroup.key`. Kept local to the
    * component (per-visit) — persistence follows in Phase 3 alongside saved
@@ -241,6 +254,39 @@ export class AllTasksViewComponent {
   toggleSortDir(): void {
     this.sort.update((prev) => ({ ...prev, dir: prev.dir === 'asc' ? 'desc' : 'asc' }));
   }
+
+  toggleFiltersExpanded(): void {
+    this.isFiltersExpanded.update((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(ALL_TASKS_FILTERS_EXPANDED_KEY, next ? '1' : '0');
+      } catch {
+        // localStorage full/blocked — swallow. The in-memory signal still
+        // toggles for the current session, which is the least-broken fallback.
+      }
+      return next;
+    });
+  }
+
+  /**
+   * Count of filter dimensions that differ from `DEFAULT_ALL_TASKS_FILTER`.
+   * Shown as a small badge next to the collapsed "Filters" toggle so the
+   * user can see at a glance whether the hidden panel is doing anything.
+   * Search text is deliberately not counted because it sits in its own
+   * always-visible row above the collapsible section.
+   */
+  readonly activeFilterCount = computed<number>(() => {
+    const f = this.filter();
+    let n = 0;
+    if (f.issueWasUpdatedOnly) n++;
+    if (f.hasNotesOnly) n++;
+    if (f.doneFilter !== DEFAULT_ALL_TASKS_FILTER.doneFilter) n++;
+    if (f.issueTypeFilter !== DEFAULT_ALL_TASKS_FILTER.issueTypeFilter) n++;
+    if (f.projectIds !== null) n++;
+    if (f.includedTagIds.length > 0) n++;
+    if (f.excludedTagIds.length > 0) n++;
+    return n;
+  });
 
   setGroupBy(v: AllTasksGroupBy): void {
     this.groupBy.set(v);

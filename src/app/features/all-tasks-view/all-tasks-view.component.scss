@@ -28,8 +28,34 @@
   }
 
   .search-field {
-    flex: 1 1 100%;
+    flex: 1 1 auto;
     max-width: none;
+  }
+}
+
+.filters-header {
+  align-items: center;
+}
+
+.filters-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-quarter);
+  padding: 0 var(--s2);
+  margin-bottom: 20px; // Aligns with mat-form-field's baseline
+  height: 40px;
+
+  .filter-count-badge {
+    display: inline-block;
+    min-width: 20px;
+    padding: 0 var(--s-quarter);
+    margin-left: var(--s-half);
+    border-radius: 10px;
+    background: var(--c-accent);
+    color: var(--c-accent-contrast);
+    font-size: 12px;
+    line-height: 20px;
+    text-align: center;
   }
 }
 

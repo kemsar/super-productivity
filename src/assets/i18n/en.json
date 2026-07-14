@@ -117,6 +117,7 @@
         "TAGS_INCLUDE": "Tags — include"
       },
       "DELETE_VIEW": "Delete this view",
+      "FILTERS_TOGGLE": "Filters",
       "GROUP_BY": "Group by",
       "LOAD_VIEW": "Load saved view",
       "RESET": "Reset filter + sort",
