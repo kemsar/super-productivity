@@ -115,7 +115,8 @@
         "REMOVE_TAG": "Remove tag",
         "SELECT_ALL": "Select all visible",
         "SELECT_TASK": "Select task",
-        "SELECTED": "{{count}} selected"
+        "SELECTED": "{{count}} selected",
+        "TOGGLE": "Bulk edit"
       },
       "EMPTY": "No tasks match your filter.",
       "FILTER": {

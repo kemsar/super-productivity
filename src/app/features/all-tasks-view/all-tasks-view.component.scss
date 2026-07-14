@@ -67,6 +67,12 @@
   }
 }
 
+// The sort-row bulk-edit toggle: colour the icon when active so it's
+// obvious the mode is on without needing to look for row checkboxes.
+button.is-active {
+  color: var(--c-accent);
+}
+
 .bulk-toolbar {
   position: sticky;
   top: 0;

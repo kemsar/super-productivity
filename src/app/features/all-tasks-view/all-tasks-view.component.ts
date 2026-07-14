@@ -133,6 +133,12 @@ export class AllTasksViewComponent {
     localStorage.getItem(ALL_TASKS_FILTERS_EXPANDED_KEY) === '1',
   );
 
+  /** Bulk-edit mode toggle — surfaces row checkboxes + the bulk-action
+   *  toolbar. Off by default so the list stays clean until the user
+   *  explicitly opts in. Kept in-memory (per-visit); persisting felt
+   *  wrong — bulk edit is a transient mode, not a preference. */
+  readonly isBulkEditMode = signal<boolean>(false);
+
   /** Ids of tasks currently selected for a bulk action (issue #16 phase 4).
    *  A `Set` gives us O(1) toggles + membership checks for the row-render
    *  loop, which matters when the visible list is large. */
@@ -444,6 +450,18 @@ export class AllTasksViewComponent {
   }
 
   // -- Bulk selection (phase 4) ---------------------------------------------
+
+  /** Toggle bulk-edit mode. Turning it off also clears the selection so
+   *  the next entry starts clean and no stale checked-state leaks. */
+  toggleBulkEditMode(): void {
+    this.isBulkEditMode.update((prev) => {
+      const next = !prev;
+      if (!next) {
+        this.selectedTaskIds.set(new Set());
+      }
+      return next;
+    });
+  }
 
   isTaskSelected(taskId: string): boolean {
     return this.selectedTaskIds().has(taskId);
