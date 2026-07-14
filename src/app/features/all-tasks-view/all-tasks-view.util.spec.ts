@@ -199,5 +199,58 @@ describe('all-tasks-view.util', () => {
       groupTasks(input, 'project', CTX);
       expect(input).toEqual(snap);
     });
+
+    // Aging-issues view (#18) — buckets by days-since-{issueLastUpdated
+    // ?? created}. Pinning `nowMs` in CTX keeps the assertions
+    // deterministic regardless of when the suite runs.
+    describe('groupBy=age', () => {
+      const NOW = new Date('2026-07-14T12:00:00Z').getTime();
+      const DAY_MS = 24 * 60 * 60 * 1000;
+      const HOUR_MS = 60 * 60 * 1000;
+      const daysAgo = (n: number): number => {
+        const offset = n * DAY_MS;
+        return NOW - offset;
+      };
+      const hoursAgo = (n: number): number => {
+        const offset = n * HOUR_MS;
+        return NOW - offset;
+      };
+      const ageCtx: TaskGroupingContext = { ...CTX, nowMs: NOW };
+
+      it('buckets by days since issueLastUpdated', () => {
+        const today = t({ id: 'today', issueLastUpdated: hoursAgo(6) });
+        const week = t({ id: 'week', issueLastUpdated: daysAgo(3) });
+        const month = t({ id: 'month', issueLastUpdated: daysAgo(20) });
+        const quarter = t({ id: 'quarter', issueLastUpdated: daysAgo(60) });
+        const half = t({ id: 'half', issueLastUpdated: daysAgo(120) });
+        const stale = t({ id: 'stale', issueLastUpdated: daysAgo(400) });
+        const groups = groupTasks(
+          [stale, half, quarter, month, week, today],
+          'age',
+          ageCtx,
+        );
+        expect(groups.map((g) => g.label)).toEqual([
+          'Today',
+          'This week',
+          '1–4 weeks',
+          '1–3 months',
+          '3–6 months',
+          '6+ months',
+        ]);
+      });
+
+      it('falls back to created when the task has no issue timestamp', () => {
+        const localOld = t({ id: 'local', created: daysAgo(60) });
+        const groups = groupTasks([localOld], 'age', ageCtx);
+        expect(groups[0].label).toBe('1–3 months');
+      });
+
+      it('sends tasks with no age source to the Unknown bucket, sorted last', () => {
+        const known = t({ id: 'known', issueLastUpdated: daysAgo(3) });
+        const unknown = t({ id: 'unk', created: undefined, issueLastUpdated: undefined });
+        const groups = groupTasks([unknown, known], 'age', ageCtx);
+        expect(groups.map((g) => g.label)).toEqual(['This week', 'Unknown age']);
+      });
+    });
   });
 });

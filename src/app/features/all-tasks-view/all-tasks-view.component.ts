@@ -215,6 +215,7 @@ export class AllTasksViewComponent {
     'dueDay',
     'timeEstimate',
     'issueProviderId',
+    'age',
   ];
 
   readonly SORT_FIELD_LABELS: Record<AllTasksSortField, string> = {
@@ -224,6 +225,7 @@ export class AllTasksViewComponent {
     dueDay: 'Due date',
     timeEstimate: 'Time estimate',
     issueProviderId: 'Issue provider',
+    age: 'Age',
   };
 
   readonly GROUP_BY_OPTIONS: { value: AllTasksGroupBy; label: string }[] = [
@@ -232,6 +234,7 @@ export class AllTasksViewComponent {
     { value: 'issueType', label: 'Issue provider' },
     { value: 'dueDay', label: 'Due date' },
     { value: 'isDone', label: 'Done state' },
+    { value: 'age', label: 'Age' },
   ];
 
   readonly ISSUE_TYPE_OPTIONS: { value: AllTasksIssueTypeFilter; label: string }[] = [

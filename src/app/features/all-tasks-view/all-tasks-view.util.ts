@@ -61,6 +61,15 @@ export const filterTasks = <T extends Task>(tasks: T[], filter: AllTasksFilter):
   });
 };
 
+/**
+ * "Age" source for grouping/sorting: falls back through remote-issue update
+ * → local task creation. Returns undefined if neither exists (rare — the
+ * unknown-age bucket catches those). This drives the aging-issues view
+ * (issue #18) so tasks age off both remote silence AND local staleness.
+ */
+export const ageSourceMs = (task: Task): number | undefined =>
+  task.issueLastUpdated ?? task.created ?? undefined;
+
 const _pickSortValue = (task: Task, field: AllTasksSortField): unknown => {
   switch (field) {
     case 'created':
@@ -75,6 +84,8 @@ const _pickSortValue = (task: Task, field: AllTasksSortField): unknown => {
       return task.issueLastUpdated ?? 0;
     case 'issueProviderId':
       return task.issueProviderId ?? '';
+    case 'age':
+      return ageSourceMs(task) ?? 0;
   }
 };
 
@@ -118,7 +129,32 @@ export interface TaskGroupingContext {
   issueTypeLabel: (issueType: string | null | undefined) => string;
   /** Label shown when the group value is missing (e.g. no due date). */
   noValueLabel: string;
+  /** "Now" reference for the `'age'` grouping mode. Injected so tests
+   *  can pin it and so the value refreshes when the grouping recomputes.
+   *  Optional — falls back to `Date.now()` when omitted. */
+  nowMs?: number;
 }
+
+/**
+ * Aging buckets used by the `'age'` group-by mode (issue #18). Cutoffs are
+ * in days-since-{issueLastUpdated ?? created}. Keys are 0-prefixed so
+ * `localeCompare` naturally orders newest → oldest; unknown-age sorts last.
+ */
+const _ageBucket = (
+  ageMs: number | undefined,
+  nowMs: number,
+): { key: string; label: string; sortKey: string } => {
+  if (ageMs === undefined || ageMs === null) {
+    return { key: 'age:__unknown', label: 'Unknown age', sortKey: '9' };
+  }
+  const days = Math.max(0, Math.floor((nowMs - ageMs) / (1000 * 60 * 60 * 24)));
+  if (days === 0) return { key: 'age:today', label: 'Today', sortKey: '0' };
+  if (days < 7) return { key: 'age:week', label: 'This week', sortKey: '1' };
+  if (days < 28) return { key: 'age:month', label: '1–4 weeks', sortKey: '2' };
+  if (days < 90) return { key: 'age:quarter', label: '1–3 months', sortKey: '3' };
+  if (days < 180) return { key: 'age:half', label: '3–6 months', sortKey: '4' };
+  return { key: 'age:stale', label: '6+ months', sortKey: '5' };
+};
 
 const _pickGroupBucket = (
   task: Task,
@@ -160,6 +196,8 @@ const _pickGroupBucket = (
         sortKey: done ? '1' : '0',
       };
     }
+    case 'age':
+      return _ageBucket(ageSourceMs(task), ctx.nowMs ?? Date.now());
     case 'none':
       return { key: 'all', label: '', sortKey: '' };
   }

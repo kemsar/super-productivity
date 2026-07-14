@@ -11,7 +11,8 @@ export type AllTasksSortField =
   | 'dueDay'
   | 'timeEstimate'
   | 'issueLastUpdated'
-  | 'issueProviderId';
+  | 'issueProviderId'
+  | 'age';
 
 export type AllTasksSortDir = 'asc' | 'desc';
 
@@ -75,7 +76,13 @@ export const DEFAULT_ALL_TASKS_SORT: AllTasksSort = {
  * of its tags. Revisit in Phase 3 (saved views) once we have a real use case
  * to shape the tradeoff.
  */
-export type AllTasksGroupBy = 'none' | 'project' | 'issueType' | 'dueDay' | 'isDone';
+export type AllTasksGroupBy =
+  | 'none'
+  | 'project'
+  | 'issueType'
+  | 'dueDay'
+  | 'isDone'
+  | 'age';
 
 export const DEFAULT_ALL_TASKS_GROUP_BY: AllTasksGroupBy = 'none';
 
