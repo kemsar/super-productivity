@@ -67,10 +67,50 @@
   }
 }
 
+.bulk-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s);
+  padding: var(--s) var(--s2);
+  margin-bottom: var(--s2);
+  background: var(--card-bg);
+  border-radius: var(--card-border-radius);
+  box-shadow: var(--whiteframe-shadow-2dp);
+
+  .bulk-count {
+    font-weight: 500;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+}
+
 .task-list {
   display: flex;
   flex-direction: column;
   gap: 0;
+}
+
+.task-row-with-select {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+
+  .task-select {
+    // Nudge into the gutter so the row keeps its familiar horizontal rhythm.
+    flex: 0 0 auto;
+    margin-left: var(--s-half);
+  }
+
+  .task-row-inner {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
 }
 
 .empty-state {

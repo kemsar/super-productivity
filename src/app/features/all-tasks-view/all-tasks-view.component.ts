@@ -18,7 +18,7 @@ import { MatCheckbox } from '@angular/material/checkbox';
 import { MatFormField, MatLabel } from '@angular/material/form-field';
 import { MatOption, MatSelect } from '@angular/material/select';
 import { MatIcon } from '@angular/material/icon';
-import { MatIconButton } from '@angular/material/button';
+import { MatButton, MatIconButton } from '@angular/material/button';
 import { MatInput } from '@angular/material/input';
 import { MatTooltip } from '@angular/material/tooltip';
 
@@ -28,7 +28,18 @@ import { TaskWithSubTasks } from '../tasks/task.model';
 import { selectAllTasksWithSubTasks } from '../tasks/store/task.selectors';
 import { selectAllProjects } from '../project/store/project.selectors';
 import { selectAllTagsWithoutMyDay } from '../tag/store/tag.reducer';
-import { ISSUE_PROVIDER_TYPES, ISSUE_PROVIDER_HUMANIZED } from '../issue/issue.const';
+import {
+  GITLAB_TYPE,
+  ISSUE_PROVIDER_HUMANIZED,
+  ISSUE_PROVIDER_TYPES,
+} from '../issue/issue.const';
+import { TaskService } from '../tasks/task.service';
+import { IssueProviderService } from '../issue/issue-provider.service';
+import { GitlabApiService } from '../issue/providers/gitlab/gitlab-api/gitlab-api.service';
+import { GitlabCfg } from '../issue/providers/gitlab/gitlab.model';
+import { SnackService } from '../../core/snack/snack.service';
+import { IssueLog } from '../../core/log';
+import { unique } from '../../util/unique';
 import {
   AllTasksCustomView,
   AllTasksFilter,
@@ -77,6 +88,7 @@ const ALL_TASKS_FILTERS_EXPANDED_KEY = 'sp_all_tasks_filters_expanded_v1';
     MatLabel,
     MatOption,
     MatSelect,
+    MatButton,
     MatIcon,
     MatIconButton,
     MatInput,
@@ -97,6 +109,10 @@ export class AllTasksViewComponent {
   private readonly _route = inject(ActivatedRoute);
   private readonly _router = inject(Router);
   private readonly _destroyRef = inject(DestroyRef);
+  private readonly _taskService = inject(TaskService);
+  private readonly _issueProviderService = inject(IssueProviderService);
+  private readonly _gitlabApiService = inject(GitlabApiService);
+  private readonly _snackService = inject(SnackService);
   readonly T = T;
   readonly ISSUE_PROVIDER_TYPES = ISSUE_PROVIDER_TYPES;
   readonly ISSUE_PROVIDER_HUMANIZED = ISSUE_PROVIDER_HUMANIZED;
@@ -116,6 +132,13 @@ export class AllTasksViewComponent {
   isFiltersExpanded = signal<boolean>(
     localStorage.getItem(ALL_TASKS_FILTERS_EXPANDED_KEY) === '1',
   );
+
+  /** Ids of tasks currently selected for a bulk action (issue #16 phase 4).
+   *  A `Set` gives us O(1) toggles + membership checks for the row-render
+   *  loop, which matters when the visible list is large. */
+  readonly selectedTaskIds = signal<Set<string>>(new Set());
+  readonly hasSelection = computed(() => this.selectedTaskIds().size > 0);
+  readonly selectionSize = computed(() => this.selectedTaskIds().size);
   /**
    * Collapsed-group state, keyed by `TaskGroup.key`. Kept local to the
    * component (per-visit) — persistence follows in Phase 3 alongside saved
@@ -418,5 +441,173 @@ export class AllTasksViewComponent {
 
   trackByGroupKey(_index: number, group: TaskGroup<TaskWithSubTasks>): string {
     return group.key;
+  }
+
+  // -- Bulk selection (phase 4) ---------------------------------------------
+
+  isTaskSelected(taskId: string): boolean {
+    return this.selectedTaskIds().has(taskId);
+  }
+
+  toggleTaskSelected(taskId: string, checked: boolean): void {
+    this.selectedTaskIds.update((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(taskId);
+      } else {
+        next.delete(taskId);
+      }
+      return next;
+    });
+  }
+
+  selectAllVisible(): void {
+    this.selectedTaskIds.set(new Set(this.visibleTasks().map((t) => t.id)));
+  }
+
+  clearSelection(): void {
+    this.selectedTaskIds.set(new Set());
+  }
+
+  private _selectedTasks(): TaskWithSubTasks[] {
+    const ids = this.selectedTaskIds();
+    return this.visibleTasks().filter((t) => ids.has(t.id));
+  }
+
+  /** Only top-level tasks — the moveToProject action rejects subtasks
+   *  (they move with their parent). We surface this filter here so the
+   *  toolbar's "Move to project" button can enable/disable accordingly. */
+  private _selectedRootTasks(): TaskWithSubTasks[] {
+    return this._selectedTasks().filter((t) => !t.parentId);
+  }
+
+  readonly selectedGitlabCount = computed<number>(() => {
+    const ids = this.selectedTaskIds();
+    if (ids.size === 0) return 0;
+    return this.allTasks().filter(
+      (t) => ids.has(t.id) && t.issueType === GITLAB_TYPE && !!t.issueId,
+    ).length;
+  });
+
+  async bulkMarkDone(isDone: boolean): Promise<void> {
+    const tasks = this._selectedTasks();
+    if (tasks.length === 0) return;
+    for (const t of tasks) {
+      if (t.isDone === isDone) continue;
+      this._taskService.update(t.id, { isDone });
+    }
+    // Rule #6: settle the reducer after a bulk-dispatch loop so downstream
+    // effects observe the finished state.
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  async bulkDelete(): Promise<void> {
+    const tasks = this._selectedTasks();
+    if (tasks.length === 0) return;
+    const confirmed = await firstValueFrom(
+      this._matDialog
+        .open(DialogConfirmComponent, {
+          restoreFocus: true,
+          data: {
+            message: `Delete ${tasks.length} task(s)? This cannot be undone.`,
+          },
+        })
+        .afterClosed(),
+    );
+    if (!confirmed) return;
+    // Includes GitLab-linked tasks — deleting them from SP does NOT close
+    // the remote issue (same guarantee as the provider-delete flow in #11).
+    this._taskService.removeMultipleTasks(tasks.map((t) => t.id));
+    this.clearSelection();
+  }
+
+  async bulkAddTag(tagId: string): Promise<void> {
+    const tasks = this._selectedTasks();
+    if (tasks.length === 0) return;
+    for (const t of tasks) {
+      const merged = unique([...(t.tagIds ?? []), tagId]);
+      if (merged.length === (t.tagIds ?? []).length) continue;
+      this._taskService.updateTags(t, merged);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  async bulkRemoveTag(tagId: string): Promise<void> {
+    const tasks = this._selectedTasks();
+    if (tasks.length === 0) return;
+    for (const t of tasks) {
+      const filtered = (t.tagIds ?? []).filter((id) => id !== tagId);
+      if (filtered.length === (t.tagIds ?? []).length) continue;
+      this._taskService.updateTags(t, filtered);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  async bulkMoveToProject(projectId: string): Promise<void> {
+    const tasks = this._selectedRootTasks();
+    if (tasks.length === 0) return;
+    for (const t of tasks) {
+      if (t.projectId === projectId) continue;
+      this._taskService.moveToProject(t, projectId);
+    }
+    await new Promise((r) => setTimeout(r, 0));
+  }
+
+  async bulkAddComment(): Promise<void> {
+    const gitlabTasks = this._selectedTasks().filter(
+      (t) => t.issueType === GITLAB_TYPE && !!t.issueId && !!t.issueProviderId,
+    );
+    if (gitlabTasks.length === 0) {
+      this._snackService.open({
+        type: 'ERROR',
+        msg: 'No GitLab-linked tasks in selection — comment supported for GitLab only.',
+      });
+      return;
+    }
+    const body = await firstValueFrom(
+      this._matDialog
+        .open(DialogPromptComponent, {
+          restoreFocus: true,
+          data: {
+            placeholder: `Comment (posted to ${gitlabTasks.length} GitLab issue(s))`,
+          },
+        })
+        .afterClosed(),
+    );
+    const trimmed = typeof body === 'string' ? body.trim() : '';
+    if (!trimmed) return;
+
+    // Cache cfg by provider id — a selection can span multiple providers
+    // (e.g. work-management group + integrations-platform project).
+    const cfgCache = new Map<string, GitlabCfg>();
+    let posted = 0;
+    let failed = 0;
+    for (const t of gitlabTasks) {
+      try {
+        const providerId = t.issueProviderId as string;
+        let cfg = cfgCache.get(providerId);
+        if (!cfg) {
+          cfg = await firstValueFrom(
+            this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
+          );
+          cfgCache.set(providerId, cfg);
+        }
+        await firstValueFrom(
+          this._gitlabApiService.postIssueNote$(t.issueId as string, trimmed, cfg),
+        );
+        posted++;
+      } catch (err) {
+        failed++;
+        IssueLog.err('bulk-comment post failed', err);
+      }
+    }
+    const skippedNonGitlab = this._selectedTasks().length - gitlabTasks.length;
+    this._snackService.open({
+      type: failed > 0 ? 'ERROR' : 'SUCCESS',
+      msg:
+        `Posted comment to ${posted} of ${gitlabTasks.length} GitLab issue(s)` +
+        (failed > 0 ? `, ${failed} failed` : '') +
+        (skippedNonGitlab > 0 ? ` (${skippedNonGitlab} non-GitLab task(s) skipped)` : ''),
+    });
   }
 }

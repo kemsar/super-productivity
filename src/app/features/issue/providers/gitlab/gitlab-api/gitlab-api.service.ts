@@ -213,6 +213,24 @@ export class GitlabApiService {
     );
   }
 
+  /**
+   * POST /projects/:project/issues/:iid/notes — attaches a plain-text
+   * comment (GitLab calls them "notes"). Used by the bulk-edit "Add
+   * comment" action (issue #16 phase 4) and, when the read side lands
+   * for issue #6, by an inline comment composer in the task detail
+   * panel too.
+   */
+  postIssueNote$(issueId: string, body: string, cfg: GitlabCfg): Observable<unknown> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._issueApiLink(cfg, issueId)}/notes`,
+        method: 'POST',
+        data: { body },
+      },
+      cfg,
+    );
+  }
+
   addTimeSpentToIssue$(
     issueId: string,
     // NOTE: duration format is without space, e.g.: 1h23m

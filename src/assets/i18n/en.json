@@ -104,6 +104,19 @@
   },
   "F": {
     "ALL_TASKS_VIEW": {
+      "BULK": {
+        "ADD_COMMENT": "Comment {{count}} GitLab issue(s)",
+        "ADD_TAG": "Add tag",
+        "CLEAR": "Clear",
+        "DELETE": "Delete",
+        "MARK_DONE": "Mark done",
+        "MARK_UNDONE": "Mark undone",
+        "MOVE_TO_PROJECT": "Move to project",
+        "REMOVE_TAG": "Remove tag",
+        "SELECT_ALL": "Select all visible",
+        "SELECT_TASK": "Select task",
+        "SELECTED": "{{count}} selected"
+      },
       "EMPTY": "No tasks match your filter.",
       "FILTER": {
         "DONE_STATE": "Done state",

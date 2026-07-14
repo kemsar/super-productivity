@@ -237,6 +237,136 @@
     </div>
   </section>
 
+  @if (hasSelection()) {
+    <section
+      class="bulk-toolbar"
+      aria-live="polite"
+    >
+      <span class="bulk-count">{{
+        T.F.ALL_TASKS_VIEW.BULK.SELECTED | translate: { count: selectionSize() }
+      }}</span>
+      <button
+        mat-button
+        type="button"
+        (click)="clearSelection()"
+      >
+        <mat-icon>close</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.CLEAR | translate }}
+      </button>
+      <button
+        mat-button
+        type="button"
+        (click)="selectAllVisible()"
+      >
+        <mat-icon>select_all</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.SELECT_ALL | translate }}
+      </button>
+
+      <span class="spacer"></span>
+
+      <button
+        mat-button
+        type="button"
+        (click)="bulkMarkDone(true)"
+      >
+        <mat-icon>check_circle</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.MARK_DONE | translate }}
+      </button>
+      <button
+        mat-button
+        type="button"
+        (click)="bulkMarkDone(false)"
+      >
+        <mat-icon>radio_button_unchecked</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.MARK_UNDONE | translate }}
+      </button>
+
+      <button
+        mat-button
+        type="button"
+        [matMenuTriggerFor]="bulkAddTagMenu"
+      >
+        <mat-icon>label</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.ADD_TAG | translate }}
+      </button>
+      <mat-menu #bulkAddTagMenu="matMenu">
+        @for (tag of allTags(); track tag.id) {
+          <button
+            mat-menu-item
+            type="button"
+            (click)="bulkAddTag(tag.id)"
+          >
+            {{ tag.title }}
+          </button>
+        }
+      </mat-menu>
+
+      <button
+        mat-button
+        type="button"
+        [matMenuTriggerFor]="bulkRemoveTagMenu"
+      >
+        <mat-icon>label_off</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.REMOVE_TAG | translate }}
+      </button>
+      <mat-menu #bulkRemoveTagMenu="matMenu">
+        @for (tag of allTags(); track tag.id) {
+          <button
+            mat-menu-item
+            type="button"
+            (click)="bulkRemoveTag(tag.id)"
+          >
+            {{ tag.title }}
+          </button>
+        }
+      </mat-menu>
+
+      <button
+        mat-button
+        type="button"
+        [matMenuTriggerFor]="bulkMoveMenu"
+      >
+        <mat-icon>drive_file_move</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.MOVE_TO_PROJECT | translate }}
+      </button>
+      <mat-menu #bulkMoveMenu="matMenu">
+        @for (p of allProjects(); track p.id) {
+          <button
+            mat-menu-item
+            type="button"
+            (click)="bulkMoveToProject(p.id)"
+          >
+            {{ p.title }}
+          </button>
+        }
+      </mat-menu>
+
+      @if (selectedGitlabCount() > 0) {
+        <button
+          mat-button
+          type="button"
+          (click)="bulkAddComment()"
+        >
+          <mat-icon>comment</mat-icon>
+          {{
+            T.F.ALL_TASKS_VIEW.BULK.ADD_COMMENT
+              | translate: { count: selectedGitlabCount() }
+          }}
+        </button>
+      }
+
+      <button
+        mat-button
+        type="button"
+        color="warn"
+        (click)="bulkDelete()"
+      >
+        <mat-icon>delete</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.DELETE | translate }}
+      </button>
+    </section>
+  }
+
   <div class="task-list">
     @if (visible.length === 0) {
       <p class="empty-state">
@@ -244,7 +374,18 @@
       </p>
     } @else if (groupBy() === 'none') {
       @for (task of groups()[0].tasks; track trackByTaskId($index, task)) {
-        <task [task]="task"></task>
+        <div class="task-row-with-select">
+          <mat-checkbox
+            class="task-select"
+            [checked]="isTaskSelected(task.id)"
+            (change)="toggleTaskSelected(task.id, $event.checked)"
+            [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.SELECT_TASK | translate"
+          ></mat-checkbox>
+          <task
+            class="task-row-inner"
+            [task]="task"
+          ></task>
+        </div>
       }
     } @else {
       @for (group of groups(); track trackByGroupKey($index, group)) {
@@ -263,7 +404,18 @@
           </button>
           @if (!isGroupCollapsed(group.key)) {
             @for (task of group.tasks; track trackByTaskId($index, task)) {
-              <task [task]="task"></task>
+              <div class="task-row-with-select">
+                <mat-checkbox
+                  class="task-select"
+                  [checked]="isTaskSelected(task.id)"
+                  (change)="toggleTaskSelected(task.id, $event.checked)"
+                  [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.SELECT_TASK | translate"
+                ></mat-checkbox>
+                <task
+                  class="task-row-inner"
+                  [task]="task"
+                ></task>
+              </div>
             }
           }
         </section>
