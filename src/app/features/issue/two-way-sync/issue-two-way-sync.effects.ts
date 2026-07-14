@@ -176,6 +176,15 @@ export class IssueTwoWaySyncEffects {
           ) {
             return false;
           }
+          // Recurring instances of issue-linked tasks (issue #17) share the
+          // remote linkage with their template but must NOT push local edits
+          // upstream — completing this week's reminder must not close the
+          // upstream issue, and re-titling one instance shouldn't rename the
+          // issue for every future recurrence. Poll-refresh in the other
+          // direction still works.
+          if (fullTask.repeatCfgId) {
+            return false;
+          }
           return !!this._getAdapter(fullTask.issueType);
         }),
         concatMap(({ fullTask, changes }) =>

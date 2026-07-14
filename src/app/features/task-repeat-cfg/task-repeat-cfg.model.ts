@@ -1,6 +1,7 @@
 import { EntityState } from '@ngrx/entity';
 import { TaskReminderOptionId } from '../tasks/task.model';
 import { getDbDateStr } from '../../util/get-db-date-str';
+import { IssueProviderKey } from '../issue/issue.model';
 
 export const TASK_REPEAT_WEEKDAY_MAP: (keyof TaskRepeatCfg)[] = [
   'sunday',
@@ -99,6 +100,16 @@ export interface TaskRepeatCfgCopy {
   deletedInstanceDates?: string[];
   // When true, missed/overdue instances are silently skipped instead of being created
   skipOverdue?: boolean;
+
+  // Issue linkage carried onto each recurring instance (issue #17). Copied
+  // from the source task when the user makes it repeatable, so each cycle's
+  // spawned task keeps the reference to the same remote issue for
+  // context/refresh, but two-way sync suppresses isDone push on these
+  // instances — completing a recurring reminder must NOT close the underlying
+  // issue in GitLab/Jira/etc.
+  issueId?: string;
+  issueType?: IssueProviderKey;
+  issueProviderId?: string;
 }
 
 export type TaskRepeatCfg = Readonly<TaskRepeatCfgCopy>;

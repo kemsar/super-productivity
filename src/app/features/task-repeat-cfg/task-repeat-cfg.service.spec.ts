@@ -376,6 +376,54 @@ describe('TaskRepeatCfgService', () => {
       );
     });
 
+    it('propagates issue linkage from the cfg to each spawned instance (#17)', async () => {
+      const today = new Date();
+      const targetDayDate = today.getTime();
+      const cfgWithIssue: TaskRepeatCfg = {
+        ...mockTaskRepeatCfg,
+        issueId: 'gitlab/proj#42',
+        issueType: 'GITLAB',
+        issueProviderId: 'gitlab-provider-1',
+      };
+      taskService.getTasksWithSubTasksByRepeatCfgId$.and.returnValue(of([]));
+      taskService.createNewTaskWithDefaults.and.callFake((args: any) => ({
+        ...mockTask,
+        ...args.additional,
+        id: args.id || mockTask.id,
+      }));
+
+      await service.createRepeatableTask(cfgWithIssue, targetDayDate);
+
+      expect(taskService.createNewTaskWithDefaults).toHaveBeenCalledWith(
+        jasmine.objectContaining({
+          additional: jasmine.objectContaining({
+            issueId: 'gitlab/proj#42',
+            issueType: 'GITLAB',
+            issueProviderId: 'gitlab-provider-1',
+            // Fresh issueWasUpdated so poll-refresh treats it as a new sink.
+            issueWasUpdated: false,
+          }),
+        }),
+      );
+    });
+
+    it('does not stamp issue fields when the cfg has none (native SP task)', async () => {
+      const today = new Date();
+      const targetDayDate = today.getTime();
+      taskService.getTasksWithSubTasksByRepeatCfgId$.and.returnValue(of([]));
+      taskService.createNewTaskWithDefaults.and.callFake((args: any) => ({
+        ...mockTask,
+        ...args.additional,
+      }));
+
+      await service.createRepeatableTask(mockTaskRepeatCfg, targetDayDate);
+
+      const call = taskService.createNewTaskWithDefaults.calls.mostRecent().args[0];
+      expect((call as any).additional.issueId).toBeUndefined();
+      expect((call as any).additional.issueType).toBeUndefined();
+      expect((call as any).additional.issueProviderId).toBeUndefined();
+    });
+
     it('should not create a duplicate task but still advance lastTaskCreationDay when task already exists for the day', async () => {
       const today = new Date();
       const targetDayDate = today.getTime();

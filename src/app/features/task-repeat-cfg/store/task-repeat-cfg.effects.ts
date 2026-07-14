@@ -176,11 +176,23 @@ export class TaskRepeatCfgEffects {
           ? this._dateService.isToday(firstOccurrence)
           : true;
 
-        // Update repeat config with subtask templates AND the correct lastTaskCreationDay
+        // Update repeat config with subtask templates AND the correct
+        // lastTaskCreationDay. If the source task is issue-linked, copy the
+        // linkage onto the cfg (issue #17) so each spawned instance is born
+        // pre-linked to the same remote issue.
+        const issueChanges: Partial<TaskRepeatCfgCopy> =
+          task.issueId && task.issueType && task.issueProviderId
+            ? {
+                issueId: task.issueId,
+                issueType: task.issueType,
+                issueProviderId: task.issueProviderId,
+              }
+            : {};
         this._taskRepeatCfgService.updateTaskRepeatCfg(taskRepeatCfg.id, {
           subTaskTemplates,
           lastTaskCreationDay: firstOccurrenceStr,
           lastTaskCreation: firstOccurrence?.getTime() || Date.now(),
+          ...issueChanges,
         });
 
         if (!isFirstOccurrenceToday_ && firstOccurrence) {
