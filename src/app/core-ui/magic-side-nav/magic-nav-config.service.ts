@@ -37,6 +37,7 @@ import { GlobalConfigService } from '../../features/config/global-config.service
 import { AppFeaturesConfig } from '../../features/config/global-config.model';
 import { SnackService } from '../../core/snack/snack.service';
 import { IS_DONATION_UI_RESTRICTED } from '../../app.constants';
+import { AllTasksCustomViewsService } from '../../features/all-tasks-view/all-tasks-custom-views.service';
 
 @Injectable({
   providedIn: 'root',
@@ -53,6 +54,7 @@ export class MagicNavConfigService {
   private readonly _configService = inject(GlobalConfigService);
   private readonly _snackService = inject(SnackService);
   private readonly _router = inject(Router);
+  private readonly _allTasksCustomViewsService = inject(AllTasksCustomViewsService);
 
   // Simple state signals
   private readonly _isProjectsExpanded = signal(
@@ -445,6 +447,24 @@ export class MagicNavConfigService {
       icon: 'filter_list',
       route: '/all-tasks',
     });
+
+    // Saved custom views (#16 phase 3). Each becomes an action item that
+    // navigates to /all-tasks?view=<id>. Uses action-type rather than route
+    // so we can attach queryParams — the router-link path doesn't accept a
+    // pre-formatted `?view=xxx` string directly.
+    for (const view of this._allTasksCustomViewsService.sortedViews()) {
+      items.push({
+        type: 'action',
+        id: `all-tasks-view-${view.id}`,
+        label: view.name,
+        icon: 'bookmark',
+        action: () => {
+          this._router.navigate(['/all-tasks'], {
+            queryParams: { view: view.id },
+          });
+        },
+      });
+    }
 
     if (this.isHabitsEnabled()) {
       items.push({

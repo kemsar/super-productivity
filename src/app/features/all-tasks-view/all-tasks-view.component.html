@@ -157,6 +157,61 @@
         <mat-icon>clear_all</mat-icon>
       </button>
 
+      <button
+        mat-icon-button
+        type="button"
+        (click)="saveAsNewView()"
+        [attr.aria-label]="T.F.ALL_TASKS_VIEW.SAVE_AS | translate"
+        [matTooltip]="T.F.ALL_TASKS_VIEW.SAVE_AS | translate"
+      >
+        <mat-icon>bookmark_add</mat-icon>
+      </button>
+
+      @if (activeViewId()) {
+        <button
+          mat-icon-button
+          type="button"
+          (click)="updateActiveView()"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.UPDATE_VIEW | translate"
+          [matTooltip]="T.F.ALL_TASKS_VIEW.UPDATE_VIEW | translate"
+        >
+          <mat-icon>save</mat-icon>
+        </button>
+      }
+
+      @if (savedViews().length > 0) {
+        <button
+          mat-icon-button
+          type="button"
+          [matMenuTriggerFor]="viewsMenu"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.LOAD_VIEW | translate"
+          [matTooltip]="T.F.ALL_TASKS_VIEW.LOAD_VIEW | translate"
+        >
+          <mat-icon>bookmarks</mat-icon>
+        </button>
+        <mat-menu #viewsMenu="matMenu">
+          @for (view of savedViews(); track view.id) {
+            <button
+              mat-menu-item
+              type="button"
+              (click)="loadView(view)"
+              [class.active-view]="activeViewId() === view.id"
+            >
+              <mat-icon>{{ activeViewId() === view.id ? 'check' : 'bookmark' }}</mat-icon>
+              <span class="view-name">{{ view.name }}</span>
+              <button
+                mat-icon-button
+                type="button"
+                (click)="deleteView(view, $event)"
+                [attr.aria-label]="T.F.ALL_TASKS_VIEW.DELETE_VIEW | translate"
+              >
+                <mat-icon>delete</mat-icon>
+              </button>
+            </button>
+          }
+        </mat-menu>
+      }
+
       <span class="result-count">
         {{
           T.F.ALL_TASKS_VIEW.RESULT_COUNT

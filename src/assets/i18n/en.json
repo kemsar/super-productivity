@@ -116,13 +116,17 @@
         "TAGS_EXCLUDE": "Tags — exclude",
         "TAGS_INCLUDE": "Tags — include"
       },
+      "DELETE_VIEW": "Delete this view",
       "GROUP_BY": "Group by",
+      "LOAD_VIEW": "Load saved view",
       "RESET": "Reset filter + sort",
       "RESULT_COUNT": "{{count}} of {{total}} tasks",
+      "SAVE_AS": "Save as new view",
       "SORT": {
         "FIELD": "Sort by",
         "TOGGLE_DIR": "Toggle sort direction"
-      }
+      },
+      "UPDATE_VIEW": "Update saved view"
     },
     "ANDROID": {
       "FOREGROUND_SERVICE_START_FAILED_FOCUS": "Android blocked the persistent focus mode notification. The timer continues in the app, but background alerts may be unavailable. Check notification permission and battery/background restrictions.",

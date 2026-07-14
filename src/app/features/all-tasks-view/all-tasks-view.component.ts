@@ -2,9 +2,14 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  DestroyRef,
+  effect,
   inject,
   signal,
 } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { ActivatedRoute, Router } from '@angular/router';
+import { MatDialog } from '@angular/material/dialog';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { AsyncPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -16,6 +21,7 @@ import { MatOption, MatSelect } from '@angular/material/select';
 import { MatIcon } from '@angular/material/icon';
 import { MatIconButton } from '@angular/material/button';
 import { MatInput } from '@angular/material/input';
+import { MatTooltip } from '@angular/material/tooltip';
 
 import { T } from '../../t.const';
 import { TaskComponent } from '../tasks/task/task.component';
@@ -25,6 +31,7 @@ import { selectAllProjects } from '../project/store/project.selectors';
 import { selectAllTagsWithoutMyDay } from '../tag/store/tag.reducer';
 import { ISSUE_PROVIDER_TYPES, ISSUE_PROVIDER_HUMANIZED } from '../issue/issue.const';
 import {
+  AllTasksCustomView,
   AllTasksFilter,
   AllTasksGroupBy,
   AllTasksIssueTypeFilter,
@@ -34,6 +41,11 @@ import {
   DEFAULT_ALL_TASKS_GROUP_BY,
   DEFAULT_ALL_TASKS_SORT,
 } from './all-tasks-view.model';
+import { AllTasksCustomViewsService } from './all-tasks-custom-views.service';
+import { DialogPromptComponent } from '../../ui/dialog-prompt/dialog-prompt.component';
+import { DialogConfirmComponent } from '../../ui/dialog-confirm/dialog-confirm.component';
+import { firstValueFrom } from 'rxjs';
+import { MatMenu, MatMenuItem, MatMenuTrigger } from '@angular/material/menu';
 import {
   filterTasks,
   groupTasks,
@@ -64,6 +76,10 @@ import {
     MatIcon,
     MatIconButton,
     MatInput,
+    MatMenu,
+    MatMenuItem,
+    MatMenuTrigger,
+    MatTooltip,
     TaskComponent,
   ],
   templateUrl: './all-tasks-view.component.html',
@@ -72,9 +88,17 @@ import {
 })
 export class AllTasksViewComponent {
   private readonly _store = inject(Store);
+  private readonly _customViewsService = inject(AllTasksCustomViewsService);
+  private readonly _matDialog = inject(MatDialog);
+  private readonly _route = inject(ActivatedRoute);
+  private readonly _router = inject(Router);
+  private readonly _destroyRef = inject(DestroyRef);
   readonly T = T;
   readonly ISSUE_PROVIDER_TYPES = ISSUE_PROVIDER_TYPES;
   readonly ISSUE_PROVIDER_HUMANIZED = ISSUE_PROVIDER_HUMANIZED;
+  readonly savedViews = this._customViewsService.sortedViews;
+  /** Currently-loaded view id, if any. Enables the "Update" affordance. */
+  readonly activeViewId = signal<string | null>(null);
 
   filter = signal<AllTasksFilter>(DEFAULT_ALL_TASKS_FILTER);
   sort = signal<AllTasksSort>(DEFAULT_ALL_TASKS_SORT);
@@ -231,6 +255,115 @@ export class AllTasksViewComponent {
     this.sort.set(DEFAULT_ALL_TASKS_SORT);
     this.groupBy.set(DEFAULT_ALL_TASKS_GROUP_BY);
     this._collapsedGroups.set({});
+    this.activeViewId.set(null);
+    // Drop the ?view=... query param so refreshes don't reload a view the
+    // user just cleared.
+    this._router.navigate([], {
+      relativeTo: this._route,
+      queryParams: { view: null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  }
+
+  constructor() {
+    // React to `?view=<id>` changes — a saved view loaded from the nav or a
+    // direct link should apply its filter/sort/groupBy on entry.
+    this._route.queryParamMap
+      .pipe(takeUntilDestroyed(this._destroyRef))
+      .subscribe((params) => {
+        const id = params.get('view');
+        if (id && id !== this.activeViewId()) {
+          this._applyViewById(id);
+        } else if (!id && this.activeViewId()) {
+          this.activeViewId.set(null);
+        }
+      });
+    // If a saved view is deleted while it's active, silently drop back to
+    // "unsaved / free-form" state instead of showing a stale name.
+    effect(() => {
+      const active = this.activeViewId();
+      if (active && !this._customViewsService.getById(active)) {
+        this.activeViewId.set(null);
+      }
+    });
+  }
+
+  private _applyViewById(id: string): void {
+    const view = this._customViewsService.getById(id);
+    if (!view) {
+      return;
+    }
+    this.filter.set(view.filter);
+    this.sort.set(view.sort);
+    this.groupBy.set(view.groupBy);
+    this._collapsedGroups.set({});
+    this.activeViewId.set(view.id);
+  }
+
+  async saveAsNewView(): Promise<void> {
+    const name = await firstValueFrom(
+      this._matDialog
+        .open(DialogPromptComponent, {
+          restoreFocus: true,
+          data: {
+            placeholder: 'View name',
+          },
+        })
+        .afterClosed(),
+    );
+    const trimmed = typeof name === 'string' ? name.trim() : '';
+    if (!trimmed) return;
+    const view = this._customViewsService.save({
+      name: trimmed,
+      filter: this.filter(),
+      sort: this.sort(),
+      groupBy: this.groupBy(),
+    });
+    this.activeViewId.set(view.id);
+    this._router.navigate([], {
+      relativeTo: this._route,
+      queryParams: { view: view.id },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  }
+
+  updateActiveView(): void {
+    const id = this.activeViewId();
+    if (!id) return;
+    this._customViewsService.update(id, {
+      filter: this.filter(),
+      sort: this.sort(),
+      groupBy: this.groupBy(),
+    });
+  }
+
+  loadView(view: AllTasksCustomView): void {
+    this._router.navigate([], {
+      relativeTo: this._route,
+      queryParams: { view: view.id },
+      queryParamsHandling: 'merge',
+    });
+  }
+
+  async deleteView(view: AllTasksCustomView, event?: MouseEvent): Promise<void> {
+    // The delete button lives inside the view row in the menu; suppress
+    // the row's click (which would load the view) so a delete gesture is
+    // unambiguous.
+    event?.stopPropagation();
+    const confirmed = await firstValueFrom(
+      this._matDialog
+        .open(DialogConfirmComponent, {
+          restoreFocus: true,
+          data: {
+            message: `Delete saved view "${view.name}"? This cannot be undone.`,
+          },
+        })
+        .afterClosed(),
+    );
+    if (!confirmed) return;
+    this._customViewsService.remove(view.id);
   }
 
   trackByTaskId(_index: number, task: TaskWithSubTasks): string {

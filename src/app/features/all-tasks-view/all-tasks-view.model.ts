@@ -78,3 +78,19 @@ export const DEFAULT_ALL_TASKS_SORT: AllTasksSort = {
 export type AllTasksGroupBy = 'none' | 'project' | 'issueType' | 'dueDay' | 'isDone';
 
 export const DEFAULT_ALL_TASKS_GROUP_BY: AllTasksGroupBy = 'none';
+
+/**
+ * A user-saved combination of filter + sort + groupBy that can be recalled
+ * from the "Views" dropdown or a dedicated nav entry (issue #16, phase 3).
+ * Local-only persistence for now (localStorage) — cross-device sync would
+ * mean a new EntityType in the shared schema, which is worth doing only
+ * when there's a clear user need for it.
+ */
+export interface AllTasksCustomView {
+  id: string;
+  name: string;
+  filter: AllTasksFilter;
+  sort: AllTasksSort;
+  groupBy: AllTasksGroupBy;
+  createdAt: number;
+}
