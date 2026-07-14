@@ -164,6 +164,20 @@
         </mat-select>
       </mat-form-field>
 
+      @if (groupBy() !== 'none') {
+        <button
+          mat-icon-button
+          type="button"
+          (click)="toggleGroupDir()"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.GROUP_DIR_TOGGLE | translate"
+          [matTooltip]="T.F.ALL_TASKS_VIEW.GROUP_DIR_TOGGLE | translate"
+        >
+          <mat-icon>{{
+            groupDir() === 'asc' ? 'arrow_upward' : 'arrow_downward'
+          }}</mat-icon>
+        </button>
+      }
+
       <button
         mat-icon-button
         type="button"
@@ -413,18 +427,29 @@
     } @else {
       @for (group of groups(); track trackByGroupKey($index, group)) {
         <section class="task-group">
-          <button
-            class="task-group-header"
-            type="button"
-            (click)="toggleGroup(group.key)"
-            [attr.aria-expanded]="!isGroupCollapsed(group.key)"
-          >
-            <mat-icon class="chevron">{{
-              isGroupCollapsed(group.key) ? 'chevron_right' : 'expand_more'
-            }}</mat-icon>
-            <span class="task-group-label">{{ group.label }}</span>
-            <span class="task-group-count">{{ group.tasks.length }}</span>
-          </button>
+          <div class="task-group-header">
+            @if (isBulkEditMode()) {
+              <mat-checkbox
+                class="task-group-select"
+                [checked]="groupSelectionState(group) === 'all'"
+                [indeterminate]="groupSelectionState(group) === 'some'"
+                (change)="toggleGroupSelected(group, $event.checked)"
+                [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.SELECT_GROUP | translate"
+              ></mat-checkbox>
+            }
+            <button
+              class="task-group-header-toggle"
+              type="button"
+              (click)="toggleGroup(group.key)"
+              [attr.aria-expanded]="!isGroupCollapsed(group.key)"
+            >
+              <mat-icon class="chevron">{{
+                isGroupCollapsed(group.key) ? 'chevron_right' : 'expand_more'
+              }}</mat-icon>
+              <span class="task-group-label">{{ group.label }}</span>
+              <span class="task-group-count">{{ group.tasks.length }}</span>
+            </button>
+          </div>
           @if (!isGroupCollapsed(group.key)) {
             @for (task of group.tasks; track trackByTaskId($index, task)) {
               @if (isBulkEditMode()) {

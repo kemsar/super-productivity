@@ -217,39 +217,43 @@ describe('all-tasks-view.util', () => {
       };
       const ageCtx: TaskGroupingContext = { ...CTX, nowMs: NOW };
 
-      it('buckets by days since issueLastUpdated', () => {
-        const today = t({ id: 'today', issueLastUpdated: hoursAgo(6) });
-        const week = t({ id: 'week', issueLastUpdated: daysAgo(3) });
-        const month = t({ id: 'month', issueLastUpdated: daysAgo(20) });
-        const quarter = t({ id: 'quarter', issueLastUpdated: daysAgo(60) });
-        const half = t({ id: 'half', issueLastUpdated: daysAgo(120) });
-        const stale = t({ id: 'stale', issueLastUpdated: daysAgo(400) });
+      it('buckets by days since issueLastUpdated (aligned with digest email)', () => {
+        const fresh = t({ id: 'fresh', issueLastUpdated: hoursAgo(6) });
+        const alsoFresh = t({ id: 'fresh2', issueLastUpdated: daysAgo(5) });
+        const needsUpdate = t({ id: 'needs', issueLastUpdated: daysAgo(10) });
+        const pleaseUpdate = t({ id: 'please', issueLastUpdated: daysAgo(20) });
+        const stale = t({ id: 'stale', issueLastUpdated: daysAgo(90) });
         const groups = groupTasks(
-          [stale, half, quarter, month, week, today],
+          [stale, pleaseUpdate, needsUpdate, alsoFresh, fresh],
           'age',
           ageCtx,
         );
         expect(groups.map((g) => g.label)).toEqual([
-          'Today',
-          'This week',
-          '1–4 weeks',
-          '1–3 months',
-          '3–6 months',
-          '6+ months',
+          'Fresh (≤7 days)',
+          'Stale 8–14 days',
+          'Stale 15–30 days',
+          'Stale >30 days',
         ]);
       });
 
       it('falls back to created when the task has no issue timestamp', () => {
-        const localOld = t({ id: 'local', created: daysAgo(60) });
+        const localOld = t({ id: 'local', created: daysAgo(20) });
         const groups = groupTasks([localOld], 'age', ageCtx);
-        expect(groups[0].label).toBe('1–3 months');
+        expect(groups[0].label).toBe('Stale 15–30 days');
       });
 
       it('sends tasks with no age source to the Unknown bucket, sorted last', () => {
         const known = t({ id: 'known', issueLastUpdated: daysAgo(3) });
         const unknown = t({ id: 'unk', created: undefined, issueLastUpdated: undefined });
         const groups = groupTasks([unknown, known], 'age', ageCtx);
-        expect(groups.map((g) => g.label)).toEqual(['This week', 'Unknown age']);
+        expect(groups.map((g) => g.label)).toEqual(['Fresh (≤7 days)', 'Unknown age']);
+      });
+
+      it('reverses group order when dir=desc (stale-first)', () => {
+        const fresh = t({ id: 'fresh', issueLastUpdated: hoursAgo(6) });
+        const stale = t({ id: 'stale', issueLastUpdated: daysAgo(90) });
+        const groups = groupTasks([fresh, stale], 'age', ageCtx, 'desc');
+        expect(groups.map((g) => g.label)).toEqual(['Stale >30 days', 'Fresh (≤7 days)']);
       });
     });
   });

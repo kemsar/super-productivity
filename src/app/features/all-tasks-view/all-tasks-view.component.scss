@@ -143,12 +143,24 @@ button.is-active {
   display: flex;
   align-items: center;
   gap: var(--s);
-  width: 100%;
-  padding: var(--s) var(--s2);
+  padding: 0;
   margin-bottom: var(--s-quarter);
+  border-bottom: 1px solid var(--divider-color);
+
+  .task-group-select {
+    flex: 0 0 auto;
+    margin-left: var(--s2);
+  }
+}
+
+.task-group-header-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  flex: 1 1 auto;
+  padding: var(--s) var(--s2);
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--divider-color);
   color: var(--text-color);
   font: inherit;
   font-weight: 500;

@@ -114,6 +114,7 @@
         "MOVE_TO_PROJECT": "Move to project",
         "REMOVE_TAG": "Remove tag",
         "SELECT_ALL": "Select all visible",
+        "SELECT_GROUP": "Select all in group",
         "SELECT_TASK": "Select task",
         "SELECTED": "{{count}} selected",
         "TOGGLE": "Bulk edit"
@@ -133,6 +134,7 @@
       "DELETE_VIEW": "Delete this view",
       "FILTERS_TOGGLE": "Filters",
       "GROUP_BY": "Group by",
+      "GROUP_DIR_TOGGLE": "Toggle group order",
       "LOAD_VIEW": "Load saved view",
       "RESET": "Reset filter + sort",
       "RESULT_COUNT": "{{count}} of {{total}} tasks",

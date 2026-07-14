@@ -44,11 +44,13 @@ import {
   AllTasksCustomView,
   AllTasksFilter,
   AllTasksGroupBy,
+  AllTasksGroupDir,
   AllTasksIssueTypeFilter,
   AllTasksSort,
   AllTasksSortField,
   DEFAULT_ALL_TASKS_FILTER,
   DEFAULT_ALL_TASKS_GROUP_BY,
+  DEFAULT_ALL_TASKS_GROUP_DIR,
   DEFAULT_ALL_TASKS_SORT,
 } from './all-tasks-view.model';
 import { AllTasksCustomViewsService } from './all-tasks-custom-views.service';
@@ -123,6 +125,7 @@ export class AllTasksViewComponent {
   filter = signal<AllTasksFilter>(DEFAULT_ALL_TASKS_FILTER);
   sort = signal<AllTasksSort>(DEFAULT_ALL_TASKS_SORT);
   groupBy = signal<AllTasksGroupBy>(DEFAULT_ALL_TASKS_GROUP_BY);
+  groupDir = signal<AllTasksGroupDir>(DEFAULT_ALL_TASKS_GROUP_DIR);
   /**
    * "Extra filters" panel expanded state — collapsed default so the vertical
    * footprint on the /all-tasks page stays compact (search + sort + group
@@ -197,7 +200,12 @@ export class AllTasksViewComponent {
   });
 
   readonly groups = computed<TaskGroup<TaskWithSubTasks>[]>(() =>
-    groupTasks(this.visibleTasks(), this.groupBy(), this._groupingContext()),
+    groupTasks(
+      this.visibleTasks(),
+      this.groupBy(),
+      this._groupingContext(),
+      this.groupDir(),
+    ),
   );
 
   isGroupCollapsed(key: string): boolean {
@@ -328,10 +336,15 @@ export class AllTasksViewComponent {
     this._collapsedGroups.set({});
   }
 
+  toggleGroupDir(): void {
+    this.groupDir.update((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+  }
+
   resetFilter(): void {
     this.filter.set(DEFAULT_ALL_TASKS_FILTER);
     this.sort.set(DEFAULT_ALL_TASKS_SORT);
     this.groupBy.set(DEFAULT_ALL_TASKS_GROUP_BY);
+    this.groupDir.set(DEFAULT_ALL_TASKS_GROUP_DIR);
     this._collapsedGroups.set({});
     this.activeViewId.set(null);
     // Drop the ?view=... query param so refreshes don't reload a view the
@@ -375,6 +388,7 @@ export class AllTasksViewComponent {
     this.filter.set(view.filter);
     this.sort.set(view.sort);
     this.groupBy.set(view.groupBy);
+    this.groupDir.set(view.groupDir ?? DEFAULT_ALL_TASKS_GROUP_DIR);
     this._collapsedGroups.set({});
     this.activeViewId.set(view.id);
   }
@@ -397,6 +411,7 @@ export class AllTasksViewComponent {
       filter: this.filter(),
       sort: this.sort(),
       groupBy: this.groupBy(),
+      groupDir: this.groupDir(),
     });
     this.activeViewId.set(view.id);
     this._router.navigate([], {
@@ -414,6 +429,7 @@ export class AllTasksViewComponent {
       filter: this.filter(),
       sort: this.sort(),
       groupBy: this.groupBy(),
+      groupDir: this.groupDir(),
     });
   }
 
@@ -488,6 +504,33 @@ export class AllTasksViewComponent {
 
   clearSelection(): void {
     this.selectedTaskIds.set(new Set());
+  }
+
+  /** All-checked / all-unchecked / mixed for a group's rows. Used by the
+   *  select-all-in-group checkbox in the group header (bulk-edit mode). */
+  groupSelectionState(group: TaskGroup<TaskWithSubTasks>): 'none' | 'some' | 'all' {
+    const selected = this.selectedTaskIds();
+    let count = 0;
+    for (const t of group.tasks) {
+      if (selected.has(t.id)) count++;
+    }
+    if (count === 0) return 'none';
+    if (count === group.tasks.length) return 'all';
+    return 'some';
+  }
+
+  toggleGroupSelected(group: TaskGroup<TaskWithSubTasks>, checked: boolean): void {
+    this.selectedTaskIds.update((prev) => {
+      const next = new Set(prev);
+      for (const t of group.tasks) {
+        if (checked) {
+          next.add(t.id);
+        } else {
+          next.delete(t.id);
+        }
+      }
+      return next;
+    });
   }
 
   private _selectedTasks(): TaskWithSubTasks[] {

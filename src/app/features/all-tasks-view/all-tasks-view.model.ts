@@ -86,6 +86,13 @@ export type AllTasksGroupBy =
 
 export const DEFAULT_ALL_TASKS_GROUP_BY: AllTasksGroupBy = 'none';
 
+/** Order that group headers are rendered in. Independent from `sort.dir`
+ *  because grouping and sorting are orthogonal — e.g. sort tasks title-asc
+ *  but stack age buckets stale-first (desc). */
+export type AllTasksGroupDir = 'asc' | 'desc';
+
+export const DEFAULT_ALL_TASKS_GROUP_DIR: AllTasksGroupDir = 'asc';
+
 /**
  * A user-saved combination of filter + sort + groupBy that can be recalled
  * from the "Views" dropdown or a dedicated nav entry (issue #16, phase 3).
@@ -99,5 +106,7 @@ export interface AllTasksCustomView {
   filter: AllTasksFilter;
   sort: AllTasksSort;
   groupBy: AllTasksGroupBy;
+  /** Optional so existing saved views still round-trip without upgrading. */
+  groupDir?: AllTasksGroupDir;
   createdAt: number;
 }

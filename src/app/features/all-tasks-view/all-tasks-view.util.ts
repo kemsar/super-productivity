@@ -2,6 +2,7 @@ import { Task } from '../tasks/task.model';
 import {
   AllTasksFilter,
   AllTasksGroupBy,
+  AllTasksGroupDir,
   AllTasksSort,
   AllTasksSortField,
 } from './all-tasks-view.model';
@@ -137,8 +138,15 @@ export interface TaskGroupingContext {
 
 /**
  * Aging buckets used by the `'age'` group-by mode (issue #18). Cutoffs are
- * in days-since-{issueLastUpdated ?? created}. Keys are 0-prefixed so
- * `localeCompare` naturally orders newest → oldest; unknown-age sorts last.
+ * in days-since-{issueLastUpdated ?? created} and mirror the CU automation
+ * `daily_digest.sh` bucket() function so a stale-15-days item shows up
+ * under the same header the digest email complained about it under.
+ * Keys are 0-prefixed so ordering follows fresh → stale.
+ *
+ * Source note: the digest prefers days-since-last-user-note and only
+ * falls back to `issue.updated_at` when there are no user notes. SP
+ * doesn't track notes per task, so we always ride the fallback path.
+ * Close enough for grouping; full parity would need per-task /notes.
  */
 const _ageBucket = (
   ageMs: number | undefined,
@@ -148,12 +156,14 @@ const _ageBucket = (
     return { key: 'age:__unknown', label: 'Unknown age', sortKey: '9' };
   }
   const days = Math.max(0, Math.floor((nowMs - ageMs) / (1000 * 60 * 60 * 24)));
-  if (days === 0) return { key: 'age:today', label: 'Today', sortKey: '0' };
-  if (days < 7) return { key: 'age:week', label: 'This week', sortKey: '1' };
-  if (days < 28) return { key: 'age:month', label: '1–4 weeks', sortKey: '2' };
-  if (days < 90) return { key: 'age:quarter', label: '1–3 months', sortKey: '3' };
-  if (days < 180) return { key: 'age:half', label: '3–6 months', sortKey: '4' };
-  return { key: 'age:stale', label: '6+ months', sortKey: '5' };
+  if (days <= 7) return { key: 'age:fresh', label: 'Fresh (≤7 days)', sortKey: '0' };
+  if (days <= 14) {
+    return { key: 'age:update-needed', label: 'Stale 8–14 days', sortKey: '1' };
+  }
+  if (days <= 30) {
+    return { key: 'age:please-update', label: 'Stale 15–30 days', sortKey: '2' };
+  }
+  return { key: 'age:closed-inactivity', label: 'Stale >30 days', sortKey: '3' };
 };
 
 const _pickGroupBucket = (
@@ -215,6 +225,7 @@ export const groupTasks = <T extends Task>(
   tasks: T[],
   groupBy: AllTasksGroupBy,
   ctx: TaskGroupingContext,
+  dir: AllTasksGroupDir = 'asc',
 ): TaskGroup<T>[] => {
   if (groupBy === 'none') {
     return [{ key: 'all', label: '', tasks: [...tasks] }];
@@ -235,7 +246,8 @@ export const groupTasks = <T extends Task>(
     }
   }
 
+  const sign = dir === 'asc' ? 1 : -1;
   return [...bucketMap.entries()]
-    .sort(([, a], [, b]) => a.sortKey.localeCompare(b.sortKey))
+    .sort(([, a], [, b]) => a.sortKey.localeCompare(b.sortKey) * sign)
     .map(([key, v]) => ({ key, label: v.label, tasks: v.tasks }));
 };
