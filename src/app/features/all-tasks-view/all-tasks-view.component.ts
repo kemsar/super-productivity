@@ -102,6 +102,21 @@ export class AllTasksViewComponent {
 
   private readonly _groupingContext = computed<TaskGroupingContext>(() => {
     const projects = this.allProjects();
+    // No-value label is dimension-specific: "Local task" reads better than
+    // a generic dash for the issueType bucket that catches native SP tasks,
+    // and each dimension has an equivalent semantic zero.
+    const noValueLabel = ((): string => {
+      switch (this.groupBy()) {
+        case 'issueType':
+          return 'Local task';
+        case 'dueDay':
+          return 'No due date';
+        case 'project':
+          return 'No project';
+        default:
+          return '—';
+      }
+    })();
     return {
       projectTitle: (id) => (id && projects.find((p) => p.id === id)?.title) || id || '',
       issueTypeLabel: (it) =>
@@ -111,7 +126,7 @@ export class AllTasksViewComponent {
           ]) ||
         it ||
         '',
-      noValueLabel: '—',
+      noValueLabel,
     };
   });
 
