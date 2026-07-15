@@ -89,7 +89,7 @@ import { isTaskOverdue } from '../util/is-task-overdue';
 import { isDeadlineApproaching as isDeadlineApproachingFn } from '../util/is-deadline-approaching';
 import { TaskContextMenuComponent } from '../task-context-menu/task-context-menu.component';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { ICAL_TYPE, PLAINSPACE_TYPE } from '../../issue/issue.const';
+import { GITLAB_TYPE, ICAL_TYPE, PLAINSPACE_TYPE } from '../../issue/issue.const';
 import { TaskTitleComponent } from '../../../ui/task-title/task-title.component';
 import { MatIcon } from '@angular/material/icon';
 import { MatIconButton, MatMiniFabButton } from '@angular/material/button';
@@ -1037,6 +1037,34 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
       this._taskService.markIssueUpdatesAsRead(task.id);
     }
     this.toggleShowDetailPanel(ev);
+  }
+
+  /**
+   * Repurposes the row's chat bubble (issue #19) for GitLab-linked tasks:
+   * clicking opens a comments/discussion dialog instead of the detail
+   * panel — the panel is already reachable via the row's main click area
+   * (issue #13). Other icon states (close when selected, update badge
+   * when issueWasUpdated) still route through the original toggle handler
+   * so the badge-dismiss + selection-close semantics stay intact.
+   */
+  async onChatIconClick(ev?: MouseEvent): Promise<void> {
+    const task = this.task();
+    const isChatState = this.toggleButtonIcon() === 'chat';
+    if (isChatState && task.issueType === GITLAB_TYPE && task.issueId) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      const { DialogGitlabCommentsComponent } =
+        await import('../../issue/providers/gitlab/dialog-gitlab-comments/dialog-gitlab-comments.component');
+      this._matDialog.open(DialogGitlabCommentsComponent, {
+        data: { task },
+        restoreFocus: true,
+        autoFocus: false,
+      });
+      return;
+    }
+    this.onToggleDetailPanelBtnClick(ev);
   }
 
   toggleShowDetailPanel(ev?: MouseEvent): void {

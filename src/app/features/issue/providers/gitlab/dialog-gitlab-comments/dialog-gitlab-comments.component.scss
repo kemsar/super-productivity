@@ -1,0 +1,96 @@
+.dialog-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+
+  .title-text {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.dialog-content {
+  min-width: 480px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s);
+}
+
+.state-msg {
+  color: var(--text-color-muted);
+  text-align: center;
+  padding: var(--s3);
+  margin: 0;
+
+  &.error {
+    color: var(--c-warn);
+  }
+}
+
+.comment {
+  padding: var(--s2);
+  background: var(--card-bg);
+  border: 1px solid var(--divider-color);
+  border-radius: var(--card-border-radius);
+
+  // Distinguish the issue-description "first message" from real comments —
+  // description sits above the thread as context, not part of the exchange.
+  &.description {
+    background: var(--bg-darker);
+    border-color: transparent;
+  }
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  margin-bottom: var(--s-half);
+  font-size: 13px;
+
+  .author {
+    font-weight: 500;
+  }
+
+  .timestamp {
+    color: var(--text-color-muted);
+  }
+
+  .badge {
+    margin-left: auto;
+    padding: 0 var(--s-half);
+    border-radius: 4px;
+    background: var(--c-accent);
+    color: var(--c-accent-contrast);
+    font-size: 11px;
+    text-transform: uppercase;
+  }
+}
+
+.comment-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s);
+  padding: var(--s2);
+}
+
+.composer-field {
+  width: 100%;
+}
+
+.composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s);
+}
