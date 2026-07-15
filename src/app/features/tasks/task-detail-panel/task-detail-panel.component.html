@@ -310,7 +310,11 @@
       <ng-container input-value></ng-container>
     </task-detail-item>
   }
-  @if (!task().parentId && !task().issueId) {
+  <!-- Issue-linked tasks CAN now be made repeatable (#17). Two-way sync is
+       gated for tasks with a repeatCfgId, so completing a recurring
+       reminder never closes the upstream issue. Only sub-tasks stay
+       excluded — they can't independently repeat. -->
+  @if (!task().parentId) {
     <task-detail-item
       (collapseParent)="collapseParent()"
       (editActionTriggered)="editTaskRepeatCfg()"
