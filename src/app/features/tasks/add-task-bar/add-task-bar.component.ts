@@ -156,7 +156,17 @@ export class AddTaskBarComponent implements AfterViewInit, OnInit, OnDestroy {
     JSON.parse(localStorage.getItem(LS.IS_ADD_TO_BOTTOM) || 'false'),
   );
   isAddToBacklog = signal(false);
-  isSearchMode = signal(false);
+  // Issue-search mode default is ON (issue #22): most users expect a fuzzy
+  // "type to see matching issues" affordance out of the box. The toggle
+  // still works — its value is persisted per-device so a user who prefers
+  // the old clean-input flow only has to turn it off once. Legacy behavior
+  // (search off) is preserved for anyone who explicitly saved that choice.
+  isSearchMode = signal(
+    ((): boolean => {
+      const raw = localStorage.getItem(LS.IS_ADD_TASK_ISSUE_SEARCH);
+      return raw === null ? true : JSON.parse(raw);
+    })(),
+  );
   isSearchLoading = signal(false);
   activatedSuggestion$ = new BehaviorSubject<AddTaskSuggestion | null>(null);
   isMentionListShown = signal(false);
@@ -185,10 +195,10 @@ export class AddTaskBarComponent implements AfterViewInit, OnInit, OnDestroy {
   );
   // The submit (+) button is always in the layout so its space is reserved; it
   // is only visually shown while composing a task (hidden via visibility, not
-  // display, so the input width never jumps).
-  isSubmitVisible = computed(
-    () => !this.isSearchMode() && this.stateService.inputTxt().length > 0,
-  );
+  // display, so the input width never jumps). Shown in both create and
+  // search modes now (issue #22) — search mode surfaces suggestions but
+  // the user can still create a fresh task with the typed text.
+  isSubmitVisible = computed(() => this.stateService.inputTxt().length > 0);
 
   defaultProject$ = combineLatest([
     this.projects$,
@@ -734,6 +744,12 @@ export class AddTaskBarComponent implements AfterViewInit, OnInit, OnDestroy {
 
   toggleSearchMode(): void {
     this.isSearchMode.update((mode) => !mode);
+    // Persist per device so the user's preference sticks across launches
+    // (issue #22). Default remains true for anyone who hasn't picked yet.
+    localStorage.setItem(
+      LS.IS_ADD_TASK_ISSUE_SEARCH,
+      JSON.stringify(this.isSearchMode()),
+    );
     this.focusInput();
   }
 
@@ -763,10 +779,15 @@ export class AddTaskBarComponent implements AfterViewInit, OnInit, OnDestroy {
       return;
     }
 
-    // Handle Enter key
+    // Handle Enter key. When the autocomplete panel is open with a
+    // highlighted suggestion, Material intercepts Enter and fires
+    // `optionSelected` before this handler runs — so falling through to
+    // `addTask()` is safe even in search mode (issue #22). It only fires
+    // when nothing is selected, which is the "create with typed text"
+    // path the user wants.
     if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
-      if (!this.isSearchMode() && !event.repeat) {
+      if (!event.repeat) {
         void this.addTask();
       }
       return;

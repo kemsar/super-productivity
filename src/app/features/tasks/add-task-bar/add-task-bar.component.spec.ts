@@ -515,6 +515,13 @@ describe('AddTaskBarComponent', () => {
   });
 
   describe('note panel', () => {
+    // Note panel is a create-mode-only affordance. Issue-search mode
+    // defaults to ON (#22), so start each spec in create mode; the two
+    // "no-op in search mode" specs flip it back explicitly.
+    beforeEach(() => {
+      component.isSearchMode.set(false);
+    });
+
     it('toggleNote should flip the expanded state', () => {
       // focusInput re-focuses the title input, which tries to open the
       // autocomplete in the test harness — irrelevant to this assertion.
