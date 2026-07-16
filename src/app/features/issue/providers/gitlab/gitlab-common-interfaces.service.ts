@@ -1,6 +1,6 @@
 import { inject, Injectable } from '@angular/core';
-import { firstValueFrom, Observable } from 'rxjs';
-import { catchError, map, tap } from 'rxjs/operators';
+import { firstValueFrom, from, Observable } from 'rxjs';
+import { catchError, map, mergeMap, tap, toArray } from 'rxjs/operators';
 import { Task } from 'src/app/features/tasks/task.model';
 import { BaseIssueProviderService } from '../../base/base-issue-provider.service';
 import { IssueData, SearchResultItem } from '../../issue.model';
@@ -264,6 +264,49 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       issue,
       issueTitle: base?.issueTitle ?? this._formatIssueTitleForSnack(issue),
     };
+  }
+
+  /**
+   * Poll-fanout concurrency cap. GitLab.com throttles hard once bursts get
+   * into triple digits — every issue refresh triggers 2 REST calls (issue
+   * + `/notes`), so a 100-issue poll fires ~200 calls in ~1s and lands on
+   * 429s. Serializing 6-at-a-time keeps us under the practical ceiling
+   * while still finishing a 100-issue poll in a handful of seconds.
+   */
+  private static readonly _POLL_CONCURRENCY = 6;
+
+  /**
+   * Override the base's `Promise.all(...)` fanout with a bounded-concurrency
+   * variant so GitLab doesn't 429 us on the initial-boot burst poll. The
+   * shape of the returned promise matches the base — only the request
+   * timing is different.
+   */
+  override async getFreshDataForIssueTasks(
+    tasks: Task[],
+  ): Promise<{ task: Task; taskChanges: Partial<Task>; issue: IssueData }[]> {
+    if (tasks.length === 0) return [];
+    return firstValueFrom(
+      from(tasks).pipe(
+        mergeMap(async (task) => {
+          const refreshDataForTask = await this.getFreshDataForIssueTask(task);
+          return { task, refreshDataForTask };
+        }, GitlabCommonInterfacesService._POLL_CONCURRENCY),
+        toArray(),
+        map((items) =>
+          items.flatMap(({ refreshDataForTask, task }) =>
+            refreshDataForTask
+              ? [
+                  {
+                    task,
+                    taskChanges: refreshDataForTask.taskChanges,
+                    issue: refreshDataForTask.issue,
+                  },
+                ]
+              : [],
+          ),
+        ),
+      ),
+    );
   }
 
   async getNewIssuesToAddToBacklog(
