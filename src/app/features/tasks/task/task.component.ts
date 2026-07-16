@@ -246,6 +246,12 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
   );
   isOverdue = computed(() => {
     const t = this.task();
+    // A dueDay set by the "add to Today" flow is not a real due date —
+    // don't flag it as overdue (issue #20). See task.model.ts
+    // _dueDayAutoSetOnToday and the matching gate in isTaskOverdueByThreshold.
+    if (t._dueDayAutoSetOnToday) {
+      return false;
+    }
     const todayStr = this.globalTrackingIntervalService.todayDateStr();
     return (
       !t.isDone &&

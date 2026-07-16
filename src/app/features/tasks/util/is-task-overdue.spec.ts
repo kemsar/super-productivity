@@ -84,6 +84,35 @@ describe('isTaskOverdue', () => {
     });
   });
 
+  // Issue #20: a task parked on Today's list via the "add to Today" flow
+  // gets `_dueDayAutoSetOnToday = true`. Yesterday's dueDay would normally
+  // flag it as overdue, but the user never picked a due date — so the
+  // predicate must skip these regardless of dueDay.
+  describe('_dueDayAutoSetOnToday flag (#20)', () => {
+    it('is not overdue when dueDay < todayStr but the flag is true', () => {
+      expect(
+        isTaskOverdue(
+          createTask({ dueDay: '2026-03-14', _dueDayAutoSetOnToday: true }),
+          TODAY_STR,
+          NO_OFFSET,
+        ),
+      ).toBe(false);
+    });
+
+    it('is overdue when the flag is false/undefined (explicit user due date)', () => {
+      expect(
+        isTaskOverdue(
+          createTask({ dueDay: '2026-03-14', _dueDayAutoSetOnToday: false }),
+          TODAY_STR,
+          NO_OFFSET,
+        ),
+      ).toBe(true);
+      expect(
+        isTaskOverdue(createTask({ dueDay: '2026-03-14' }), TODAY_STR, NO_OFFSET),
+      ).toBe(true);
+    });
+  });
+
   describe('shared threshold contract', () => {
     it('getLogicalTodayStartMs returns local midnight shifted by the offset', () => {
       const localMidnight = new Date(2026, 2, 15).getTime();

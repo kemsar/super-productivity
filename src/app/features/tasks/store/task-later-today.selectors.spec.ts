@@ -22,6 +22,7 @@ const runLaterToday = (
       deadlineWithTime: t.deadlineWithTime ?? null,
       parentId: t.parentId ?? null,
       subTaskIds: t.subTaskIds,
+      _dueDayAutoSetOnToday: t._dueDayAutoSetOnToday === true,
     }));
   const structure = selectLaterTodayStructure.projector(snapshot, todayStr, offset);
   const entities: Record<string, Task | undefined> = {};

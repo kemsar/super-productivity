@@ -188,6 +188,10 @@ export interface SchedulingSnapshot {
   readonly deadlineWithTime: number | null;
   readonly parentId: string | null;
   readonly subTaskIds: string[];
+  /** True when dueDay was auto-set by the "add to Today" flow rather than
+   *  chosen by the user — the overdue predicate ignores these. See
+   *  task.model.ts `_dueDayAutoSetOnToday`, issue #20. */
+  readonly _dueDayAutoSetOnToday: boolean;
 }
 
 export interface SnapshotStructureEntry {
@@ -207,6 +211,7 @@ const _schedulingSnapEqual = (a: SchedulingSnapshot, b: SchedulingSnapshot): boo
   a.deadlineDay === b.deadlineDay &&
   a.deadlineWithTime === b.deadlineWithTime &&
   a.parentId === b.parentId &&
+  a._dueDayAutoSetOnToday === b._dueDayAutoSetOnToday &&
   fastArrayCompare(a.subTaskIds, b.subTaskIds);
 
 // Builds a scheduling snapshot from an ordered task array. A per-id cache keyed
@@ -244,6 +249,7 @@ const createSchedulingSnapshotProjector = (): ((
           deadlineWithTime: task.deadlineWithTime ?? null,
           parentId: task.parentId ?? null,
           subTaskIds: task.subTaskIds,
+          _dueDayAutoSetOnToday: task._dueDayAutoSetOnToday === true,
         };
         snap = cached && _schedulingSnapEqual(cached.snap, built) ? cached.snap : built;
         cache.set(task.id, { taskRef: task, snap });

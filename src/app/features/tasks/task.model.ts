@@ -126,6 +126,24 @@ export interface TaskCopy
   hasPlannedTime?: boolean;
 
   /**
+   * Marks a `dueDay` that was set by the "add to Today" flow rather than
+   * chosen by the user (issue #20). SP's architecture uses `dueDay === todayStr`
+   * as the Today-list membership rule, which conflates "on today's list"
+   * with "due today". Without this flag, a task the user parks on Today
+   * turns into "Overdue" the moment the day rolls over.
+   *
+   * Stamped `true` when a task with no prior scheduling gets pulled into
+   * Today (planTasksForToday, planTaskForDay for today), and preserved
+   * across daily rollovers (`AddTasksForTomorrowService.addAllDueToday`).
+   * Cleared whenever the user picks a specific date (scheduleTaskWithTime,
+   * transferTask to another day, updateTask with an explicit dueDay change).
+   *
+   * The `isOverdue` predicate skips flagged tasks — the user never asked
+   * for a due date, so nothing is truly overdue.
+   */
+  _dueDayAutoSetOnToday?: boolean;
+
+  /**
    * Deadline date as ISO string (YYYY-MM-DD). For deadlines without a specific time.
    * Follows mutual exclusivity with deadlineWithTime (same pattern as dueDay/dueWithTime).
    */

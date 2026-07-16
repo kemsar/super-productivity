@@ -42,7 +42,14 @@ const handleTransferTask = (
   prevDay: string,
   targetTaskId?: string,
 ): RootState => {
-  // First, update the task's dueDay and clear dueWithTime (from task.reducer)
+  // First, update the task's dueDay and clear dueWithTime (from task.reducer).
+  // transferTask is an explicit user gesture (drag between planner days), so
+  // clear the auto-set-on-Today marker (only if it was set) — the user is
+  // committing to a specific day, not just parking on Today. See
+  // task.model.ts _dueDayAutoSetOnToday, issue #20.
+  const srcTask = state[TASK_FEATURE_NAME].entities[task.id] as Task | undefined;
+  const clearAutoSet =
+    srcTask?._dueDayAutoSetOnToday === true ? { _dueDayAutoSetOnToday: undefined } : {};
   state = {
     ...state,
     [TASK_FEATURE_NAME]: taskAdapter.updateOne(
@@ -51,6 +58,7 @@ const handleTransferTask = (
         changes: {
           dueDay: newDay,
           dueWithTime: undefined,
+          ...clearAutoSet,
         },
       },
       state[TASK_FEATURE_NAME],
