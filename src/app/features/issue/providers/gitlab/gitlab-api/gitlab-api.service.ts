@@ -216,16 +216,58 @@ export class GitlabApiService {
   /**
    * POST /projects/:project/issues/:iid/notes — attaches a plain-text
    * comment (GitLab calls them "notes"). Used by the bulk-edit "Add
-   * comment" action (issue #16 phase 4) and, when the read side lands
-   * for issue #6, by an inline comment composer in the task detail
-   * panel too.
+   * comment" action (issue #16 phase 4) and the comments dialog
+   * (issue #19). `isInternal` maps to GitLab's `internal` note flag,
+   * which flags a note as visible to project members only (formerly
+   * `confidential`; both names accepted by the API for BC).
    */
-  postIssueNote$(issueId: string, body: string, cfg: GitlabCfg): Observable<unknown> {
+  postIssueNote$(
+    issueId: string,
+    body: string,
+    cfg: GitlabCfg,
+    isInternal: boolean = false,
+  ): Observable<unknown> {
     return this._sendRawRequest$(
       {
         url: `${this._issueApiLink(cfg, issueId)}/notes`,
         method: 'POST',
+        data: isInternal ? { body, internal: true } : { body },
+      },
+      cfg,
+    );
+  }
+
+  /**
+   * PUT /projects/:project/issues/:iid/notes/:note_id — edits an existing
+   * note's body. GitLab only allows the note's author (or a project
+   * maintainer) to update; other callers get a 403. The `internal` flag
+   * is immutable server-side, so this endpoint only takes `body`.
+   */
+  updateIssueNote$(
+    issueId: string,
+    noteId: number,
+    body: string,
+    cfg: GitlabCfg,
+  ): Observable<unknown> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._issueApiLink(cfg, issueId)}/notes/${noteId}`,
+        method: 'PUT',
         data: { body },
+      },
+      cfg,
+    );
+  }
+
+  /**
+   * DELETE /projects/:project/issues/:iid/notes/:note_id — removes a
+   * note. Same permission rules as edit: author or maintainer only.
+   */
+  deleteIssueNote$(issueId: string, noteId: number, cfg: GitlabCfg): Observable<unknown> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._issueApiLink(cfg, issueId)}/notes/${noteId}`,
+        method: 'DELETE',
       },
       cfg,
     );

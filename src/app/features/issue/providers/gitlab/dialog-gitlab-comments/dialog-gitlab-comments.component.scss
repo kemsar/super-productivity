@@ -44,6 +44,42 @@
     background: var(--bg-darker);
     border-color: transparent;
   }
+
+  // Internal notes get a warning tint so the visibility distinction is
+  // obvious at a glance without having to read the badge.
+  &.is-internal {
+    background: color-mix(in srgb, var(--c-warn) 8%, var(--card-bg));
+    border-color: color-mix(in srgb, var(--c-warn) 40%, var(--divider-color));
+  }
+
+  &.is-deleting {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .comment-actions {
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  &:hover .comment-actions,
+  &.is-editing .comment-actions {
+    opacity: 1;
+  }
+}
+
+.edit-field {
+  width: 100%;
+  margin-top: var(--s);
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s);
 }
 
 .comment-header {
@@ -69,6 +105,14 @@
     color: var(--c-accent-contrast);
     font-size: 11px;
     text-transform: uppercase;
+
+    // Internal-note badge sits alongside actions — the warning color
+    // reinforces the "restricted visibility" signal from the tinted body.
+    &.internal-badge {
+      background: var(--c-warn);
+      color: var(--c-warn-contrast, #fff);
+      margin-left: 0;
+    }
   }
 }
 
@@ -91,6 +135,14 @@
 
 .composer-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
   gap: var(--s);
+
+  .internal-toggle {
+    margin-right: auto;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
 }

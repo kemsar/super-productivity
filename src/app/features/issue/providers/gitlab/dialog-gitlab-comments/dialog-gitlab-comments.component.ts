@@ -10,6 +10,7 @@ import {
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
   MAT_DIALOG_DATA,
+  MatDialog,
   MatDialogActions,
   MatDialogContent,
   MatDialogRef,
@@ -17,8 +18,10 @@ import {
 } from '@angular/material/dialog';
 import { MatButton, MatIconButton } from '@angular/material/button';
 import { MatIcon } from '@angular/material/icon';
+import { MatCheckbox } from '@angular/material/checkbox';
 import { MatFormField, MatLabel } from '@angular/material/form-field';
 import { MatInput } from '@angular/material/input';
+import { MatTooltip } from '@angular/material/tooltip';
 import { FormsModule } from '@angular/forms';
 import { DatePipe } from '@angular/common';
 import { firstValueFrom } from 'rxjs';
@@ -31,6 +34,7 @@ import { GitlabIssue } from '../gitlab-issue.model';
 import { GitlabOriginalComment } from '../gitlab-api/gitlab-api-responses';
 import { SnackService } from '../../../../../core/snack/snack.service';
 import { IssueLog } from '../../../../../core/log';
+import { DialogConfirmComponent } from '../../../../../ui/dialog-confirm/dialog-confirm.component';
 
 /**
  * Read/write conversation panel for a GitLab issue linked to an SP task
@@ -57,9 +61,11 @@ import { IssueLog } from '../../../../../core/log';
     MatButton,
     MatIconButton,
     MatIcon,
+    MatCheckbox,
     MatFormField,
     MatLabel,
     MatInput,
+    MatTooltip,
     FormsModule,
     DatePipe,
   ],
@@ -67,6 +73,7 @@ import { IssueLog } from '../../../../../core/log';
 export class DialogGitlabCommentsComponent implements OnInit {
   private readonly _matDialogRef =
     inject<MatDialogRef<DialogGitlabCommentsComponent>>(MatDialogRef);
+  private readonly _matDialog = inject(MatDialog);
   private readonly _issueProviderService = inject(IssueProviderService);
   private readonly _gitlabApiService = inject(GitlabApiService);
   private readonly _snackService = inject(SnackService);
@@ -79,7 +86,18 @@ export class DialogGitlabCommentsComponent implements OnInit {
   readonly isLoading = signal(true);
   readonly errorMsg = signal<string | null>(null);
   readonly draft = signal('');
+  /** When true, the composed comment is posted as a GitLab "internal" note
+   *  (visible to project members only). Off by default so a stray Enter
+   *  never leaks a public comment as internal or vice-versa. */
+  readonly isInternal = signal(false);
   readonly isPosting = signal(false);
+  /** ID of the note the user is currently editing inline, or null if none. */
+  readonly editingNoteId = signal<number | null>(null);
+  readonly editDraft = signal('');
+  readonly isSavingEdit = signal(false);
+  /** Ids of notes with an in-flight delete so the row can render disabled
+   *  while the DELETE request is pending. */
+  readonly deletingNoteIds = signal<Set<number>>(new Set());
 
   /** User-authored notes only — GitLab tags system-generated notes
    *  (label toggles, MR references, state changes) with `system: true`;
@@ -133,9 +151,13 @@ export class DialogGitlabCommentsComponent implements OnInit {
         this._issueProviderService.getCfgOnce$(task.issueProviderId, 'GITLAB'),
       );
       await firstValueFrom(
-        this._gitlabApiService.postIssueNote$(task.issueId, body, cfg),
+        this._gitlabApiService.postIssueNote$(task.issueId, body, cfg, this.isInternal()),
       );
       this.draft.set('');
+      // Reset the internal flag after a successful post — the checkbox is a
+      // per-message affordance, not a sticky mode. Users who want a whole
+      // thread of internal notes can toggle it back on for each.
+      this.isInternal.set(false);
       // Refresh so the new note appears without a manual reload.
       await this._loadIssue();
     } catch (err) {
@@ -146,6 +168,92 @@ export class DialogGitlabCommentsComponent implements OnInit {
       });
     } finally {
       this.isPosting.set(false);
+    }
+  }
+
+  isNoteInternal(c: GitlabOriginalComment): boolean {
+    // Older GitLab versions still emit `confidential`; recent ones use
+    // `internal`. Treat either as "internal" so the badge is consistent
+    // across instances.
+    return !!(c.internal || c.confidential);
+  }
+
+  startEdit(comment: GitlabOriginalComment): void {
+    // Cancel any prior edit — only one inline editor at a time keeps the
+    // save/cancel semantics simple and prevents interleaved PUTs.
+    this.editingNoteId.set(comment.id);
+    this.editDraft.set(comment.body);
+  }
+
+  cancelEdit(): void {
+    this.editingNoteId.set(null);
+    this.editDraft.set('');
+  }
+
+  async saveEdit(): Promise<void> {
+    const noteId = this.editingNoteId();
+    const body = this.editDraft().trim();
+    if (noteId == null || !body || this.isSavingEdit()) return;
+    const task = this.data.task;
+    if (!task.issueProviderId || !task.issueId) return;
+
+    this.isSavingEdit.set(true);
+    try {
+      const cfg = await firstValueFrom(
+        this._issueProviderService.getCfgOnce$(task.issueProviderId, 'GITLAB'),
+      );
+      await firstValueFrom(
+        this._gitlabApiService.updateIssueNote$(task.issueId, noteId, body, cfg),
+      );
+      this.cancelEdit();
+      await this._loadIssue();
+    } catch (err) {
+      IssueLog.err('edit comment failed', err);
+      this._snackService.open({
+        type: 'ERROR',
+        msg: 'Failed to edit comment (author/maintainer only)',
+      });
+    } finally {
+      this.isSavingEdit.set(false);
+    }
+  }
+
+  async deleteComment(comment: GitlabOriginalComment): Promise<void> {
+    if (this.deletingNoteIds().has(comment.id)) return;
+    const confirmed = await firstValueFrom(
+      this._matDialog
+        .open(DialogConfirmComponent, {
+          restoreFocus: true,
+          data: { message: 'Delete this comment from GitLab? This cannot be undone.' },
+        })
+        .afterClosed(),
+    );
+    if (!confirmed) return;
+
+    const task = this.data.task;
+    if (!task.issueProviderId || !task.issueId) return;
+
+    this.deletingNoteIds.update((prev) => new Set(prev).add(comment.id));
+    try {
+      const cfg = await firstValueFrom(
+        this._issueProviderService.getCfgOnce$(task.issueProviderId, 'GITLAB'),
+      );
+      await firstValueFrom(
+        this._gitlabApiService.deleteIssueNote$(task.issueId, comment.id, cfg),
+      );
+      await this._loadIssue();
+    } catch (err) {
+      IssueLog.err('delete comment failed', err);
+      this._snackService.open({
+        type: 'ERROR',
+        msg: 'Failed to delete comment (author/maintainer only)',
+      });
+    } finally {
+      this.deletingNoteIds.update((prev) => {
+        const next = new Set(prev);
+        next.delete(comment.id);
+        return next;
+      });
     }
   }
 

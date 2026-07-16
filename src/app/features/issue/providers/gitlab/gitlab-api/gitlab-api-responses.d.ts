@@ -89,6 +89,11 @@ export type GitlabOriginalComment = Readonly<{
   noteable_type: string;
   noteable_iid: number;
   resolvable: boolean;
+  /** GitLab flags notes visible only to project members with `internal:
+   *  true` (formerly `confidential`; both names return in some payloads).
+   *  Used by the comments dialog to badge "Internal" notes. */
+  internal?: boolean;
+  confidential?: boolean;
 }>;
 
 // Subset of GET /groups/:id/subgroups response — only the fields the tree
