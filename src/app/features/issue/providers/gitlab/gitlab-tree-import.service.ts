@@ -1,6 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { Store } from '@ngrx/store';
 import { firstValueFrom } from 'rxjs';
+import { first } from 'rxjs/operators';
 import { nanoid } from 'nanoid';
 
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
@@ -20,6 +21,8 @@ import {
 } from '../../../menu-tree/store/menu-tree.model';
 import { IssueProviderActions } from '../../store/issue-provider.actions';
 import { IssueProviderGitlab } from '../../issue.model';
+import { TaskService } from '../../../tasks/task.service';
+import { GITLAB_TYPE } from '../../issue.const';
 
 /**
  * One-shot importer that mirrors a GitLab group's subgroup/project structure
@@ -43,6 +46,7 @@ export class GitlabTreeImportService {
   private readonly _projectService = inject(ProjectService);
   private readonly _menuTree = inject(MenuTreeService);
   private readonly _store = inject(Store);
+  private readonly _taskService = inject(TaskService);
 
   async importTree(
     cfg: GitlabCfg,
@@ -66,6 +70,7 @@ export class GitlabTreeImportService {
       createdFolders: 0,
       reusedFolders: 0,
       skippedArchived: 0,
+      reroutedTasks: 0,
       projectMapping,
       folderMapping,
     };
@@ -148,7 +153,60 @@ export class GitlabTreeImportService {
       }),
     );
 
+    // Sweep for orphaned tasks whose issueId points at one of the mapped
+    // GitLab projects but whose SP projectId doesn't match. This heals the
+    // race where a poll imported issues BEFORE the tree-import added the
+    // corresponding entry (see issue #24) — those tasks land in the user's
+    // fallback project (usually Inbox) and never migrate on their own.
+    // Idempotent: a task already in the right SP project is skipped.
+    result.reroutedTasks = await this._rerouteOrphanTasks(
+      parentProviderId,
+      projectMapping,
+    );
+
     return result;
+  }
+
+  /**
+   * Move any task linked to a GitLab issue whose project path is in the
+   * mapping BUT whose current SP projectId doesn't match the mapping. Skips
+   * sub-tasks (they can't be re-parented independently) and tasks already
+   * in the correct project. Runs after the mapping has been dispatched so
+   * subsequent polls will route correctly on their own.
+   */
+  private async _rerouteOrphanTasks(
+    parentProviderId: string,
+    projectMapping: Record<string, GitlabTreeImportEntry>,
+  ): Promise<number> {
+    if (Object.keys(projectMapping).length === 0) return 0;
+    const allTasks = await firstValueFrom(this._taskService.allTasks$.pipe(first()));
+    let moved = 0;
+    for (const task of allTasks) {
+      if (
+        task.issueType !== GITLAB_TYPE ||
+        task.issueProviderId !== parentProviderId ||
+        !task.issueId ||
+        !!task.parentId
+      ) {
+        continue;
+      }
+      const projectPath = task.issueId.split('#')[0];
+      const entry = projectMapping[projectPath];
+      if (!entry) continue;
+      if (task.projectId === entry.spProjectId) continue;
+
+      const taskWithSubs = await firstValueFrom(
+        this._taskService.getByIdWithSubTaskData$(task.id),
+      );
+      this._taskService.moveToProject(taskWithSubs, entry.spProjectId);
+      moved++;
+    }
+    if (moved > 0) {
+      // Yield so the meta-reducers observe the move dispatches before the
+      // caller's snack reads state (rule #6 bulk-dispatch pattern).
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    return moved;
   }
 
   private async _discoverTree(

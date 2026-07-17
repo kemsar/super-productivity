@@ -1,12 +1,13 @@
 import { TestBed } from '@angular/core/testing';
 import { signal, WritableSignal } from '@angular/core';
 import { Action, Store } from '@ngrx/store';
-import { of } from 'rxjs';
+import { Observable, of } from 'rxjs';
 
 import { GitlabTreeImportService } from './gitlab-tree-import.service';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
 import { ProjectService } from '../../../project/project.service';
 import { MenuTreeService } from '../../../menu-tree/menu-tree.service';
+import { TaskService } from '../../../tasks/task.service';
 import { IssueProviderActions } from '../../store/issue-provider.actions';
 import { GitlabCfg } from './gitlab.model';
 import { DEFAULT_GITLAB_CFG } from './gitlab.const';
@@ -66,6 +67,11 @@ describe('GitlabTreeImportService', () => {
     setProjectTree: jasmine.Spy<(next: MenuTreeTreeNode[]) => void>;
   };
   let store: jasmine.SpyObj<Store>;
+  let taskServiceStub: {
+    allTasks$: Observable<unknown[]>;
+    moveToProject: jasmine.Spy;
+    getByIdWithSubTaskData$: jasmine.Spy;
+  };
   let projectIdCounter: number;
   let projectTreeState: WritableSignal<MenuTreeTreeNode[]>;
 
@@ -106,6 +112,14 @@ describe('GitlabTreeImportService', () => {
         .and.callFake((next) => projectTreeState.set(next)),
     };
     store = jasmine.createSpyObj<Store>('Store', ['dispatch']);
+    // Default: no existing tasks. Reroute-sweep tests override allTasks$.
+    taskServiceStub = {
+      allTasks$: of([]),
+      moveToProject: jasmine.createSpy('moveToProject'),
+      getByIdWithSubTaskData$: jasmine
+        .createSpy('getByIdWithSubTaskData$')
+        .and.callFake((id: string) => of({ id, subTasks: [] })),
+    };
 
     TestBed.configureTestingModule({
       providers: [
@@ -114,6 +128,7 @@ describe('GitlabTreeImportService', () => {
         { provide: ProjectService, useValue: projectSpy },
         { provide: MenuTreeService, useValue: menuTreeStub },
         { provide: Store, useValue: store },
+        { provide: TaskService, useValue: taskServiceStub },
       ],
     });
     service = TestBed.inject(GitlabTreeImportService);
@@ -272,5 +287,82 @@ describe('GitlabTreeImportService', () => {
     expect(changes.treeImportFolderMapping['mygroup']).toEqual(
       result.folderMapping['mygroup'],
     );
+  });
+
+  // Issue #24: heal the race where a poll imported issues before the
+  // tree-import added the corresponding mapping entry — those tasks land in
+  // the fallback project (usually Inbox) and never migrate on their own.
+  describe('orphan reroute sweep (#24)', () => {
+    it('moves tasks whose GitLab project is newly mapped into the mapped SP project', async () => {
+      apiSpy.getGroupSubgroups$.and.returnValue(of([]));
+      apiSpy.getGroupProjects$.and.returnValue(of([makeProject('mygroup/pipes', 1)]));
+      taskServiceStub.allTasks$ = of([
+        {
+          id: 'orphaned',
+          issueType: 'GITLAB',
+          issueProviderId: PARENT_PROVIDER_ID,
+          issueId: 'mygroup/pipes#1',
+          projectId: 'INBOX_PROJECT',
+        },
+      ]);
+
+      const result = await service.importTree(makeCfg(), PARENT_PROVIDER_ID);
+
+      expect(result.reroutedTasks).toBe(1);
+      expect(taskServiceStub.moveToProject).toHaveBeenCalledTimes(1);
+      const [movedTask, targetProjectId] =
+        taskServiceStub.moveToProject.calls.mostRecent().args;
+      expect(movedTask.id).toBe('orphaned');
+      expect(targetProjectId).toBe(result.projectMapping['mygroup/pipes'].spProjectId);
+    });
+
+    it('skips tasks already in the correct project', async () => {
+      apiSpy.getGroupSubgroups$.and.returnValue(of([]));
+      apiSpy.getGroupProjects$.and.returnValue(of([makeProject('mygroup/pipes', 1)]));
+      // Task already lives in what will be the freshly-created SP project id.
+      // Since createProject dispenses `sp-project-N` deterministically, we can
+      // predict it: this is the first project created in the run.
+      taskServiceStub.allTasks$ = of([
+        {
+          id: 'settled',
+          issueType: 'GITLAB',
+          issueProviderId: PARENT_PROVIDER_ID,
+          issueId: 'mygroup/pipes#1',
+          projectId: 'sp-project-1',
+        },
+      ]);
+
+      const result = await service.importTree(makeCfg(), PARENT_PROVIDER_ID);
+
+      expect(result.reroutedTasks).toBe(0);
+      expect(taskServiceStub.moveToProject).not.toHaveBeenCalled();
+    });
+
+    it('never touches tasks from a different GitLab provider or with a sub-task parent', async () => {
+      apiSpy.getGroupSubgroups$.and.returnValue(of([]));
+      apiSpy.getGroupProjects$.and.returnValue(of([makeProject('mygroup/pipes', 1)]));
+      taskServiceStub.allTasks$ = of([
+        {
+          id: 'other-provider',
+          issueType: 'GITLAB',
+          issueProviderId: 'gitlab-parent-2',
+          issueId: 'mygroup/pipes#1',
+          projectId: 'INBOX_PROJECT',
+        },
+        {
+          id: 'sub-task',
+          issueType: 'GITLAB',
+          issueProviderId: PARENT_PROVIDER_ID,
+          issueId: 'mygroup/pipes#2',
+          projectId: 'INBOX_PROJECT',
+          parentId: 'some-parent',
+        },
+      ]);
+
+      const result = await service.importTree(makeCfg(), PARENT_PROVIDER_ID);
+
+      expect(result.reroutedTasks).toBe(0);
+      expect(taskServiceStub.moveToProject).not.toHaveBeenCalled();
+    });
   });
 });

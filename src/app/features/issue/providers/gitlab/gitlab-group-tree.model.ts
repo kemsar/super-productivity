@@ -28,6 +28,10 @@ export interface GitlabTreeImportResult {
   createdFolders: number;
   reusedFolders: number;
   skippedArchived: number;
+  /** Orphaned tasks (imported before their GitLab project's mapping entry
+   *  existed) that were rerouted to the mapped SP project on this run.
+   *  See issue #24. */
+  reroutedTasks: number;
   /** Fresh mappings after the run — the caller emits these back through
    *  `modelChange` so the dialog's working model stays aligned with the store. */
   projectMapping: Record<string, GitlabTreeImportEntry>;
