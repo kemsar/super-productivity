@@ -270,9 +270,21 @@ export class IssueService {
       allExistingIssueIds,
     );
 
+    // Re-read the existing ids right before dispatching. Between the read
+    // above and the list-issues REST call we just awaited, another effect
+    // (most importantly `autoCreateIssueOnTaskAdd$`) may have retro-linked
+    // a locally-added task to a brand-new remote issue whose id also came
+    // back in the list. Filtering on the stale set duplicates it. Yield
+    // once so any queued microtasks (including the retro-link dispatch)
+    // land, then rebuild the set. See issue #26 duplicate-on-first-create.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const freshExistingIssueIds =
+      (await this._taskService.getAllIssueIdsForProviderEverywhere(
+        issueProviderId,
+      )) as string[];
     const issuesToAdd: IssueDataReduced[] = potentialIssuesToAdd.filter(
       (issue: IssueDataReduced): boolean =>
-        !(allExistingIssueIds as string[]).includes(issue.id as string),
+        !freshExistingIssueIds.includes(issue.id as string),
     );
 
     issuesToAdd.forEach((issue: IssueDataReduced) => {

@@ -67,6 +67,28 @@
       #status.saving {
         color: var(--accent);
       }
+      /* Live-parsed target project — shows once a valid !name token is in
+         the input so the user knows where the task will land before hitting
+         Enter. Muted-then-accent to feel Todoist/Alfred-familiar. */
+      .parse-preview {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--fg-muted);
+      }
+      .parse-preview .chip {
+        display: inline-block;
+        background: rgba(79, 141, 255, 0.15);
+        color: var(--accent);
+        border-radius: 3px;
+        padding: 2px 8px;
+        margin-left: 4px;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 11px;
+      }
+      .parse-preview.unresolved .chip {
+        background: rgba(255, 82, 82, 0.12);
+        color: var(--error);
+      }
       .keys {
         margin-top: auto;
         display: flex;
@@ -92,24 +114,140 @@
         id="input"
         type="text"
         autofocus
-        placeholder="What's on your mind?"
+        placeholder="What's on your mind? (use !project to target)"
         autocomplete="off"
         spellcheck="false"
       />
+      <div
+        id="parse-preview"
+        class="parse-preview"
+        hidden
+      ></div>
       <div id="status"></div>
       <div class="keys">
         <span><kbd>Enter</kbd>save</span>
+        <span><kbd>!project</kbd>target</span>
         <span><kbd>Esc</kbd>cancel</span>
       </div>
     </div>
     <script>
       // Self-contained overlay logic. Talks to SP via the local REST API on
-      // 127.0.0.1:3876 (POST /tasks). See electron/quick-add-window.ts for
-      // the enclosing BrowserWindow lifecycle and issue #25 for the plan.
+      // 127.0.0.1:3876 (GET /projects, POST /tasks). See
+      // electron/quick-add-window.ts for the enclosing BrowserWindow
+      // lifecycle and issue #25 for the plan.
       (function () {
         const REST = 'http://127.0.0.1:3876';
         const input = document.getElementById('input');
         const status = document.getElementById('status');
+        const parsePreview = document.getElementById('parse-preview');
+
+        // Projects, loaded once on open. Small enough to cache in memory;
+        // token/title comparisons stay case-insensitive so `!odin-pipes`
+        // matches "ODIN Pipes" without hyphen-vs-space bikeshedding.
+        let projects = [];
+
+        async function loadProjects() {
+          try {
+            const res = await fetch(REST + '/projects');
+            if (!res.ok) return;
+            const body = await res.json();
+            // Local REST API wraps successful GETs in `{ ok: true, data: [...] }`
+            // for some endpoints and returns raw arrays for others; handle both.
+            projects = Array.isArray(body) ? body : body.data || [];
+          } catch (err) {
+            // Non-fatal — the overlay still works without project targeting.
+            // Console-log so devtools shows a signal if a user files a bug.
+            console.warn('[quick-add] failed to load projects', err);
+          }
+        }
+
+        // Titles collapse whitespace/punctuation so `ODIN Pipes` matches
+        // `!odin-pipes`, `!odinpipes`, `!Odin_Pipes`. Aggressive but
+        // effective; a token can still fail to resolve, and the preview
+        // makes that obvious before submit.
+        function normalize(s) {
+          return String(s || '')
+            .toLowerCase()
+            .replace(/[^a-z0-9]/g, '');
+        }
+
+        function resolveProject(token) {
+          if (!token) return null;
+          const needle = normalize(token);
+          if (!needle) return null;
+          // Prefer exact (normalized) title match; fall back to prefix so
+          // `!odin` picks up the first "ODIN …" project deterministically.
+          const exact = projects.find((p) => normalize(p.title) === needle);
+          if (exact) return exact;
+          const prefix = projects.find((p) => normalize(p.title).startsWith(needle));
+          return prefix || null;
+        }
+
+        // Extract the LAST `!token` from the input (Todoist convention).
+        // Returns { cleanTitle, token } — token is null if no marker.
+        // Done via string ops rather than a regex to avoid the lazy-quantifier
+        // backtracking eslint calls out on the lookalike pattern.
+        function parseInput(raw) {
+          const trimmed = raw.trim();
+          if (!trimmed) return { cleanTitle: '', token: null };
+          const bangIdx = trimmed.lastIndexOf('!');
+          // Marker must be either at start OR preceded by whitespace, else
+          // it's part of the title (e.g. "fix !!important" shouldn't parse).
+          if (
+            bangIdx === -1 ||
+            (bangIdx > 0 && !/\s/.test(trimmed.charAt(bangIdx - 1)))
+          ) {
+            return { cleanTitle: trimmed, token: null };
+          }
+          const rest = trimmed.slice(bangIdx + 1).trim();
+          // Token cannot contain whitespace or another `!` — those signals
+          // mean it's not a well-formed target marker.
+          if (!rest || /\s|!/.test(rest)) {
+            return { cleanTitle: trimmed, token: null };
+          }
+          return {
+            cleanTitle: trimmed.slice(0, bangIdx).trim(),
+            token: rest,
+          };
+        }
+
+        function updatePreview() {
+          const { token } = parseInput(input.value);
+          if (!token) {
+            parsePreview.hidden = true;
+            parsePreview.classList.remove('unresolved');
+            parsePreview.innerHTML = '';
+            return;
+          }
+          const project = resolveProject(token);
+          parsePreview.hidden = false;
+          if (project) {
+            parsePreview.classList.remove('unresolved');
+            parsePreview.innerHTML =
+              'Target: <span class="chip">' + escapeHtml(project.title) + '</span>';
+          } else {
+            parsePreview.classList.add('unresolved');
+            parsePreview.innerHTML =
+              'No project matches <span class="chip">!' + escapeHtml(token) + '</span>';
+          }
+        }
+
+        function escapeHtml(s) {
+          return String(s).replace(/[&<>"']/g, (c) => {
+            switch (c) {
+              case '&':
+                return '&amp;';
+              case '<':
+                return '&lt;';
+              case '>':
+                return '&gt;';
+              case '"':
+                return '&quot;';
+              default:
+                return '&#39;';
+            }
+          });
+        }
 
         function setStatus(text, cls) {
           status.textContent = text;
@@ -117,27 +255,35 @@
         }
 
         async function submit() {
-          const title = input.value.trim();
-          if (!title) return;
+          const raw = input.value.trim();
+          if (!raw) return;
+          const { cleanTitle, token } = parseInput(raw);
+          if (!cleanTitle) return;
+          const project = token ? resolveProject(token) : null;
+          // If the user typed a `!token` that didn't resolve, fail loud
+          // rather than silently dropping the marker and posting to
+          // Inbox — that would be a Todoist paper-cut all over again.
+          if (token && !project) {
+            setStatus('No project matches "!' + token + '"', 'error');
+            return;
+          }
           setStatus('Saving…', 'saving');
+          const body = { title: cleanTitle };
+          if (project) body.projectId = project.id;
           try {
             const res = await fetch(REST + '/tasks', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ title }),
+              body: JSON.stringify(body),
             });
             if (!res.ok) {
-              const body = await res.text();
-              setStatus('Save failed (' + res.status + '): ' + body, 'error');
+              const errBody = await res.text();
+              setStatus('Save failed (' + res.status + '): ' + errBody, 'error');
               return;
             }
-            // Reset on success; user might want to add another. If they meant
-            // to close, Esc still closes. This matches Alfred-style rapid
-            // capture ergonomics.
             input.value = '';
+            updatePreview();
             setStatus('Saved.', '');
-            // Close after a short pause so the "Saved." confirmation is
-            // perceivable but doesn't stall the workflow.
             setTimeout(() => {
               window.close();
             }, 350);
@@ -146,6 +292,7 @@
           }
         }
 
+        input.addEventListener('input', updatePreview);
         input.addEventListener('keydown', (ev) => {
           if (ev.key === 'Escape') {
             ev.preventDefault();
@@ -158,10 +305,9 @@
           }
         });
 
-        // Re-focus on show. Electron's `ready-to-show` fires before the
-        // <input autofocus> takes effect in some cases; belt-and-suspenders.
         window.addEventListener('focus', () => input.focus());
         input.focus();
+        loadProjects();
       })();
     </script>
   </body>
