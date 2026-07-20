@@ -1,0 +1,191 @@
+.all-tasks-view {
+  padding: var(--s3);
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2);
+  margin-bottom: var(--s3);
+  background: var(--card-bg);
+  border-radius: var(--card-border-radius);
+  box-shadow: var(--whiteframe-shadow-1dp);
+}
+
+.filter-row {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+  flex-wrap: wrap;
+
+  mat-form-field {
+    min-width: 180px;
+    flex: 1 1 200px;
+    max-width: 320px;
+  }
+
+  .search-field {
+    flex: 1 1 auto;
+    max-width: none;
+  }
+}
+
+.filters-header {
+  align-items: center;
+}
+
+.filters-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-quarter);
+  padding: 0 var(--s2);
+  margin-bottom: 20px; // Aligns with mat-form-field's baseline
+  height: 40px;
+
+  .filter-count-badge {
+    display: inline-block;
+    min-width: 20px;
+    padding: 0 var(--s-quarter);
+    margin-left: var(--s-half);
+    border-radius: 10px;
+    background: var(--c-accent);
+    color: var(--c-accent-contrast);
+    font-size: 12px;
+    line-height: 20px;
+    text-align: center;
+  }
+}
+
+.sort-row {
+  .result-count {
+    margin-left: auto;
+    color: var(--text-color-muted);
+    font-size: 13px;
+  }
+}
+
+// The sort-row bulk-edit toggle: colour the icon when active so it's
+// obvious the mode is on without needing to look for row checkboxes.
+button.is-active {
+  color: var(--c-accent);
+}
+
+.bulk-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s);
+  padding: var(--s) var(--s2);
+  margin-bottom: var(--s2);
+  background: var(--card-bg);
+  border-radius: var(--card-border-radius);
+  box-shadow: var(--whiteframe-shadow-2dp);
+
+  .bulk-count {
+    font-weight: 500;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+}
+
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.task-row-with-select {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+
+  .task-select {
+    // Nudge into the gutter so the row keeps its familiar horizontal rhythm.
+    flex: 0 0 auto;
+    margin-left: var(--s-half);
+  }
+
+  .task-row-inner {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+}
+
+.empty-state {
+  text-align: center;
+  color: var(--text-color-muted);
+  padding: var(--s4);
+}
+
+::ng-deep .mat-mdc-menu-item.active-view {
+  background: var(--bg-darker);
+  font-weight: 500;
+
+  .view-name {
+    flex: 1 1 auto;
+  }
+}
+
+.task-group {
+  display: block;
+  margin-bottom: var(--s2);
+}
+
+.task-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  padding: 0;
+  margin-bottom: var(--s-quarter);
+  border-bottom: 1px solid var(--divider-color);
+
+  .task-group-select {
+    flex: 0 0 auto;
+    margin-left: var(--s2);
+  }
+}
+
+.task-group-header-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  flex: 1 1 auto;
+  padding: var(--s) var(--s2);
+  background: transparent;
+  border: none;
+  color: var(--text-color);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+
+  &:hover {
+    background: var(--bg-darker);
+  }
+
+  .chevron {
+    color: var(--text-color-muted);
+    // Icons default to 24px which is bigger than the section label —
+    // trim slightly so the header stays visually balanced.
+    font-size: 20px;
+    width: 20px;
+    height: 20px;
+  }
+
+  .task-group-label {
+    flex: 1 1 auto;
+  }
+
+  .task-group-count {
+    color: var(--text-color-muted);
+    font-size: 13px;
+  }
+}

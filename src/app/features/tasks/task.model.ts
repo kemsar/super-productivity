@@ -68,6 +68,15 @@ export interface IssueFieldsForTask {
   issueTimeTracked?: IssueTaskTimeTracked;
   issuePoints?: number;
   issueLastSyncedValues?: Record<string, unknown>;
+  /**
+   * Timestamp (ms) of the most recent non-system, non-bot comment on the
+   * linked remote issue. Provider-populated during sync (currently GitLab
+   * only). Drives the aging-issues view (#18) so buckets reflect the last
+   * *human* interaction rather than automated `updated_at` bumps.
+   * Undefined for tasks without comments or for providers that don't
+   * emit it — the aging util falls back to `issueLastUpdated ?? created`.
+   */
+  lastUserNoteAt?: number | null;
 }
 
 // Extend the plugin Task type with app-specific fields
@@ -115,6 +124,24 @@ export interface TaskCopy
    */
   dueDay?: string | null;
   hasPlannedTime?: boolean;
+
+  /**
+   * Marks a `dueDay` that was set by the "add to Today" flow rather than
+   * chosen by the user (issue #20). SP's architecture uses `dueDay === todayStr`
+   * as the Today-list membership rule, which conflates "on today's list"
+   * with "due today". Without this flag, a task the user parks on Today
+   * turns into "Overdue" the moment the day rolls over.
+   *
+   * Stamped `true` when a task with no prior scheduling gets pulled into
+   * Today (planTasksForToday, planTaskForDay for today), and preserved
+   * across daily rollovers (`AddTasksForTomorrowService.addAllDueToday`).
+   * Cleared whenever the user picks a specific date (scheduleTaskWithTime,
+   * transferTask to another day, updateTask with an explicit dueDay change).
+   *
+   * The `isOverdue` predicate skips flagged tasks — the user never asked
+   * for a due date, so nothing is truly overdue.
+   */
+  _dueDayAutoSetOnToday?: boolean;
 
   /**
    * Deadline date as ISO string (YYYY-MM-DD). For deadlines without a specific time.

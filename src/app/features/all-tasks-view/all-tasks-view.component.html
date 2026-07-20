@@ -1,0 +1,477 @@
+@let f = filter();
+@let s = sort();
+@let visible = visibleTasks();
+<div class="all-tasks-view">
+  <section class="filter-bar">
+    <div class="filter-row filters-header">
+      <mat-form-field
+        appearance="outline"
+        class="search-field"
+      >
+        <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.SEARCH_TEXT | translate }}</mat-label>
+        <input
+          matInput
+          id="all-tasks-search-input"
+          type="text"
+          [value]="f.searchText"
+          (input)="setSearchText($any($event.target).value)"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.FILTER.SEARCH_TEXT | translate"
+        />
+        @if (f.searchText) {
+          <button
+            mat-icon-button
+            matSuffix
+            type="button"
+            (click)="setSearchText('')"
+            [attr.aria-label]="T.F.ALL_TASKS_VIEW.FILTER.SEARCH_CLEAR | translate"
+          >
+            <mat-icon>close</mat-icon>
+          </button>
+        }
+      </mat-form-field>
+
+      <button
+        mat-stroked-button
+        type="button"
+        class="filters-toggle"
+        (click)="toggleFiltersExpanded()"
+        [attr.aria-expanded]="isFiltersExpanded()"
+      >
+        <mat-icon>{{ isFiltersExpanded() ? 'expand_less' : 'expand_more' }}</mat-icon>
+        <span>{{ T.F.ALL_TASKS_VIEW.FILTERS_TOGGLE | translate }}</span>
+        @if (activeFilterCount() > 0) {
+          <span class="filter-count-badge">{{ activeFilterCount() }}</span>
+        }
+      </button>
+    </div>
+
+    @if (isFiltersExpanded()) {
+      <div class="filter-row">
+        <mat-checkbox
+          [checked]="f.issueWasUpdatedOnly"
+          (change)="setIssueWasUpdatedOnly($event.checked)"
+        >
+          {{ T.F.ALL_TASKS_VIEW.FILTER.ISSUE_WAS_UPDATED | translate }}
+        </mat-checkbox>
+
+        <mat-checkbox
+          [checked]="f.hasNotesOnly"
+          (change)="setHasNotesOnly($event.checked)"
+        >
+          {{ T.F.ALL_TASKS_VIEW.FILTER.HAS_NOTES | translate }}
+        </mat-checkbox>
+      </div>
+
+      <div class="filter-row">
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.DONE_STATE | translate }}</mat-label>
+          <mat-select
+            [value]="f.doneFilter"
+            (selectionChange)="setDoneFilter($event.value)"
+          >
+            <mat-option value="undone">Undone</mat-option>
+            <mat-option value="done">Done</mat-option>
+            <mat-option value="any">Any</mat-option>
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.ISSUE_TYPE | translate }}</mat-label>
+          <mat-select
+            [value]="f.issueTypeFilter"
+            (selectionChange)="setIssueTypeFilter($event.value)"
+          >
+            @for (opt of ISSUE_TYPE_OPTIONS; track opt.value) {
+              <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.PROJECTS | translate }}</mat-label>
+          <mat-select
+            multiple
+            [value]="f.projectIds ?? []"
+            (selectionChange)="setProjectIds($event.value.length ? $event.value : null)"
+          >
+            @for (p of allProjects(); track p.id) {
+              <mat-option [value]="p.id">{{ p.title }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+      </div>
+
+      <div class="filter-row">
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.TAGS_INCLUDE | translate }}</mat-label>
+          <mat-select
+            multiple
+            [value]="f.includedTagIds"
+            (selectionChange)="setIncludedTagIds($event.value)"
+          >
+            @for (tag of allTags(); track tag.id) {
+              <mat-option [value]="tag.id">{{ tag.title }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+
+        <mat-form-field appearance="outline">
+          <mat-label>{{ T.F.ALL_TASKS_VIEW.FILTER.TAGS_EXCLUDE | translate }}</mat-label>
+          <mat-select
+            multiple
+            [value]="f.excludedTagIds"
+            (selectionChange)="setExcludedTagIds($event.value)"
+          >
+            @for (tag of allTags(); track tag.id) {
+              <mat-option [value]="tag.id">{{ tag.title }}</mat-option>
+            }
+          </mat-select>
+        </mat-form-field>
+      </div>
+    }
+
+    <div class="filter-row sort-row">
+      <mat-form-field appearance="outline">
+        <mat-label>{{ T.F.ALL_TASKS_VIEW.SORT.FIELD | translate }}</mat-label>
+        <mat-select
+          [value]="s.field"
+          (selectionChange)="setSortField($event.value)"
+        >
+          @for (field of SORT_FIELDS; track field) {
+            <mat-option [value]="field">{{ SORT_FIELD_LABELS[field] }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      <button
+        mat-icon-button
+        type="button"
+        (click)="toggleSortDir()"
+        [attr.aria-label]="T.F.ALL_TASKS_VIEW.SORT.TOGGLE_DIR | translate"
+      >
+        <mat-icon>{{ s.dir === 'asc' ? 'arrow_upward' : 'arrow_downward' }}</mat-icon>
+      </button>
+
+      <mat-form-field appearance="outline">
+        <mat-label>{{ T.F.ALL_TASKS_VIEW.GROUP_BY | translate }}</mat-label>
+        <mat-select
+          [value]="groupBy()"
+          (selectionChange)="setGroupBy($event.value)"
+        >
+          @for (opt of GROUP_BY_OPTIONS; track opt.value) {
+            <mat-option [value]="opt.value">{{ opt.label }}</mat-option>
+          }
+        </mat-select>
+      </mat-form-field>
+
+      @if (groupBy() !== 'none') {
+        <button
+          mat-icon-button
+          type="button"
+          (click)="toggleGroupDir()"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.GROUP_DIR_TOGGLE | translate"
+          [matTooltip]="T.F.ALL_TASKS_VIEW.GROUP_DIR_TOGGLE | translate"
+        >
+          <mat-icon>{{
+            groupDir() === 'asc' ? 'arrow_upward' : 'arrow_downward'
+          }}</mat-icon>
+        </button>
+      }
+
+      <button
+        mat-icon-button
+        type="button"
+        (click)="toggleBulkEditMode()"
+        [class.is-active]="isBulkEditMode()"
+        [attr.aria-pressed]="isBulkEditMode()"
+        [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.TOGGLE | translate"
+        [matTooltip]="T.F.ALL_TASKS_VIEW.BULK.TOGGLE | translate"
+      >
+        <mat-icon>{{
+          isBulkEditMode() ? 'check_box' : 'check_box_outline_blank'
+        }}</mat-icon>
+      </button>
+
+      <button
+        mat-icon-button
+        type="button"
+        (click)="resetFilter()"
+        [attr.aria-label]="T.F.ALL_TASKS_VIEW.RESET | translate"
+        [matTooltip]="T.F.ALL_TASKS_VIEW.RESET | translate"
+      >
+        <mat-icon>clear_all</mat-icon>
+      </button>
+
+      <button
+        mat-icon-button
+        type="button"
+        (click)="saveAsNewView()"
+        [attr.aria-label]="T.F.ALL_TASKS_VIEW.SAVE_AS | translate"
+        [matTooltip]="T.F.ALL_TASKS_VIEW.SAVE_AS | translate"
+      >
+        <mat-icon>bookmark_add</mat-icon>
+      </button>
+
+      @if (activeViewId()) {
+        <button
+          mat-icon-button
+          type="button"
+          (click)="updateActiveView()"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.UPDATE_VIEW | translate"
+          [matTooltip]="T.F.ALL_TASKS_VIEW.UPDATE_VIEW | translate"
+        >
+          <mat-icon>save</mat-icon>
+        </button>
+      }
+
+      @if (savedViews().length > 0) {
+        <button
+          mat-icon-button
+          type="button"
+          [matMenuTriggerFor]="viewsMenu"
+          [attr.aria-label]="T.F.ALL_TASKS_VIEW.LOAD_VIEW | translate"
+          [matTooltip]="T.F.ALL_TASKS_VIEW.LOAD_VIEW | translate"
+        >
+          <mat-icon>bookmarks</mat-icon>
+        </button>
+        <mat-menu #viewsMenu="matMenu">
+          @for (view of savedViews(); track view.id) {
+            <button
+              mat-menu-item
+              type="button"
+              (click)="loadView(view)"
+              [class.active-view]="activeViewId() === view.id"
+            >
+              <mat-icon>{{ activeViewId() === view.id ? 'check' : 'bookmark' }}</mat-icon>
+              <span class="view-name">{{ view.name }}</span>
+              <button
+                mat-icon-button
+                type="button"
+                (click)="deleteView(view, $event)"
+                [attr.aria-label]="T.F.ALL_TASKS_VIEW.DELETE_VIEW | translate"
+              >
+                <mat-icon>delete</mat-icon>
+              </button>
+            </button>
+          }
+        </mat-menu>
+      }
+
+      <span class="result-count">
+        {{
+          T.F.ALL_TASKS_VIEW.RESULT_COUNT
+            | translate: { count: visible.length, total: allTasks().length }
+        }}
+      </span>
+    </div>
+  </section>
+
+  @if (isBulkEditMode()) {
+    <section
+      class="bulk-toolbar"
+      aria-live="polite"
+    >
+      <span class="bulk-count">{{
+        T.F.ALL_TASKS_VIEW.BULK.SELECTED | translate: { count: selectionSize() }
+      }}</span>
+      @if (hasSelection()) {
+        <button
+          mat-button
+          type="button"
+          (click)="clearSelection()"
+        >
+          <mat-icon>close</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.CLEAR | translate }}
+        </button>
+      }
+      <button
+        mat-button
+        type="button"
+        (click)="selectAllVisible()"
+      >
+        <mat-icon>select_all</mat-icon>
+        {{ T.F.ALL_TASKS_VIEW.BULK.SELECT_ALL | translate }}
+      </button>
+
+      <span class="spacer"></span>
+
+      @if (hasSelection()) {
+        <button
+          mat-button
+          type="button"
+          (click)="bulkMarkDone(true)"
+        >
+          <mat-icon>check_circle</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.MARK_DONE | translate }}
+        </button>
+        <button
+          mat-button
+          type="button"
+          (click)="bulkMarkDone(false)"
+        >
+          <mat-icon>radio_button_unchecked</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.MARK_UNDONE | translate }}
+        </button>
+
+        <button
+          mat-button
+          type="button"
+          [matMenuTriggerFor]="bulkAddTagMenu"
+        >
+          <mat-icon>label</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.ADD_TAG | translate }}
+        </button>
+        <mat-menu #bulkAddTagMenu="matMenu">
+          @for (tag of allTags(); track tag.id) {
+            <button
+              mat-menu-item
+              type="button"
+              (click)="bulkAddTag(tag.id)"
+            >
+              {{ tag.title }}
+            </button>
+          }
+        </mat-menu>
+
+        <button
+          mat-button
+          type="button"
+          [matMenuTriggerFor]="bulkRemoveTagMenu"
+        >
+          <mat-icon>label_off</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.REMOVE_TAG | translate }}
+        </button>
+        <mat-menu #bulkRemoveTagMenu="matMenu">
+          @for (tag of allTags(); track tag.id) {
+            <button
+              mat-menu-item
+              type="button"
+              (click)="bulkRemoveTag(tag.id)"
+            >
+              {{ tag.title }}
+            </button>
+          }
+        </mat-menu>
+
+        <button
+          mat-button
+          type="button"
+          [matMenuTriggerFor]="bulkMoveMenu"
+        >
+          <mat-icon>drive_file_move</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.MOVE_TO_PROJECT | translate }}
+        </button>
+        <mat-menu #bulkMoveMenu="matMenu">
+          @for (p of allProjects(); track p.id) {
+            <button
+              mat-menu-item
+              type="button"
+              (click)="bulkMoveToProject(p.id)"
+            >
+              {{ p.title }}
+            </button>
+          }
+        </mat-menu>
+
+        @if (selectedGitlabCount() > 0) {
+          <button
+            mat-button
+            type="button"
+            (click)="bulkAddComment()"
+          >
+            <mat-icon>comment</mat-icon>
+            {{
+              T.F.ALL_TASKS_VIEW.BULK.ADD_COMMENT
+                | translate: { count: selectedGitlabCount() }
+            }}
+          </button>
+        }
+
+        <button
+          mat-button
+          type="button"
+          color="warn"
+          (click)="bulkDelete()"
+        >
+          <mat-icon>delete</mat-icon>
+          {{ T.F.ALL_TASKS_VIEW.BULK.DELETE | translate }}
+        </button>
+      }
+    </section>
+  }
+
+  <div class="task-list">
+    @if (visible.length === 0) {
+      <p class="empty-state">
+        {{ T.F.ALL_TASKS_VIEW.EMPTY | translate }}
+      </p>
+    } @else if (groupBy() === 'none') {
+      @for (task of groups()[0].tasks; track trackByTaskId($index, task)) {
+        @if (isBulkEditMode()) {
+          <div class="task-row-with-select">
+            <mat-checkbox
+              class="task-select"
+              [checked]="isTaskSelected(task.id)"
+              (change)="toggleTaskSelected(task.id, $event.checked)"
+              [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.SELECT_TASK | translate"
+            ></mat-checkbox>
+            <task
+              class="task-row-inner"
+              [task]="task"
+            ></task>
+          </div>
+        } @else {
+          <task [task]="task"></task>
+        }
+      }
+    } @else {
+      @for (group of groups(); track trackByGroupKey($index, group)) {
+        <section class="task-group">
+          <div class="task-group-header">
+            @if (isBulkEditMode()) {
+              <mat-checkbox
+                class="task-group-select"
+                [checked]="groupSelectionState(group) === 'all'"
+                [indeterminate]="groupSelectionState(group) === 'some'"
+                (change)="toggleGroupSelected(group, $event.checked)"
+                [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.SELECT_GROUP | translate"
+              ></mat-checkbox>
+            }
+            <button
+              class="task-group-header-toggle"
+              type="button"
+              (click)="toggleGroup(group.key)"
+              [attr.aria-expanded]="!isGroupCollapsed(group.key)"
+            >
+              <mat-icon class="chevron">{{
+                isGroupCollapsed(group.key) ? 'chevron_right' : 'expand_more'
+              }}</mat-icon>
+              <span class="task-group-label">{{ group.label }}</span>
+              <span class="task-group-count">{{ group.tasks.length }}</span>
+            </button>
+          </div>
+          @if (!isGroupCollapsed(group.key)) {
+            @for (task of group.tasks; track trackByTaskId($index, task)) {
+              @if (isBulkEditMode()) {
+                <div class="task-row-with-select">
+                  <mat-checkbox
+                    class="task-select"
+                    [checked]="isTaskSelected(task.id)"
+                    (change)="toggleTaskSelected(task.id, $event.checked)"
+                    [attr.aria-label]="T.F.ALL_TASKS_VIEW.BULK.SELECT_TASK | translate"
+                  ></mat-checkbox>
+                  <task
+                    class="task-row-inner"
+                    [task]="task"
+                  ></task>
+                </div>
+              } @else {
+                <task [task]="task"></task>
+              }
+            }
+          }
+        </section>
+      }
+    }
+  </div>
+</div>

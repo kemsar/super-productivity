@@ -89,4 +89,33 @@ export type GitlabOriginalComment = Readonly<{
   noteable_type: string;
   noteable_iid: number;
   resolvable: boolean;
+  /** GitLab flags notes visible only to project members with `internal:
+   *  true` (formerly `confidential`; both names return in some payloads).
+   *  Used by the comments dialog to badge "Internal" notes. */
+  internal?: boolean;
+  confidential?: boolean;
+}>;
+
+// Subset of GET /groups/:id/subgroups response — only the fields the tree
+// importer uses. Full response has ~30 fields; we deliberately narrow to
+// keep the plugin-migration seam small (fewer surface bindings to break).
+export type GitlabOriginalSubgroup = Readonly<{
+  id: number;
+  name: string;
+  path: string;
+  full_path: string;
+  parent_id: number | null;
+}>;
+
+// Subset of GET /groups/:id/projects response.
+export type GitlabOriginalGroupProject = Readonly<{
+  id: number;
+  name: string;
+  path: string;
+  path_with_namespace: string;
+  archived: boolean;
+  namespace: {
+    id: number;
+    full_path: string;
+  };
 }>;

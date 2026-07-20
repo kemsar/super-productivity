@@ -67,7 +67,14 @@ const handleScheduleTaskWithTime = (
     return state;
   }
 
-  // First, update the task entity with the scheduling data
+  // First, update the task entity with the scheduling data. Explicit user
+  // commit to a specific time → clear the auto-set-on-Today marker (only
+  // when it was set) so this task can go overdue like any user-scheduled
+  // one. See task.model.ts _dueDayAutoSetOnToday, issue #20.
+  const clearAutoSet =
+    currentTask._dueDayAutoSetOnToday === true
+      ? { _dueDayAutoSetOnToday: undefined }
+      : {};
   let updatedState: RootState = {
     ...state,
     [TASK_FEATURE_NAME]: taskAdapter.updateOne(
@@ -80,6 +87,7 @@ const handleScheduleTaskWithTime = (
           // See: docs/ai/dueDay-dueWithTime-mutual-exclusivity.md
           dueDay: undefined,
           remindAt,
+          ...clearAutoSet,
         },
       },
       state[TASK_FEATURE_NAME],
@@ -235,12 +243,30 @@ const handlePlanTasksForToday = (
       ? !!task?.dueWithTime
       : task?.dueWithTime && !isTodayWithOffset(task.dueWithTime, today, offsetMs);
 
+    // Mark dueDay as auto-set when this is a fresh "add to Today" on an
+    // unscheduled task, OR when we're carrying a previously auto-set task
+    // forward past midnight (its dueDay was yesterday, still auto-set).
+    // Tasks that had a user-picked dueDay/dueWithTime keep the flag off so
+    // they can still go overdue. Only emit the field when we're actually
+    // changing it — leaving it out avoids adding an `undefined` key to
+    // tasks that never had the flag (spec compat). See task.model.ts, #20.
+    const hadPriorSchedule = !!task?.dueDay || task?.dueWithTime != null;
+    const wasAutoSet = task?._dueDayAutoSetOnToday === true;
+    const shouldMarkAutoSet = wasAutoSet || !hadPriorSchedule;
+    let autoSetChange: Partial<Task> = {};
+    if (shouldMarkAutoSet && !wasAutoSet) {
+      autoSetChange = { _dueDayAutoSetOnToday: true };
+    } else if (!shouldMarkAutoSet && wasAutoSet) {
+      autoSetChange = { _dueDayAutoSetOnToday: undefined };
+    }
+
     return {
       id: taskId,
       changes: {
         dueDay: today,
         remindAt: undefined, // Always clear reminder when explicitly adding to today
         ...(shouldClearTime ? { dueWithTime: undefined } : {}),
+        ...autoSetChange,
       },
     };
   });

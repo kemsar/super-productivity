@@ -27,18 +27,24 @@ export const getLogicalTodayStartMs = (
  * Priority follows the dueWithTime/dueDay mutual-exclusivity pattern.
  */
 export const isTaskOverdueByThreshold = (
-  task: Pick<Task, 'dueDay' | 'dueWithTime'>,
+  task: Pick<Task, 'dueDay' | 'dueWithTime' | '_dueDayAutoSetOnToday'>,
   todayStr: string,
   todayStartMs: number,
-): boolean =>
-  !!(
-    // String comparison works because dueDay is YYYY-MM-DD (lexicographically
-    // sortable), avoiding timezone conversion issues.
-    (
-      (task.dueDay && isDBDateStr(task.dueDay) && task.dueDay < todayStr) ||
-      (task.dueWithTime && task.dueWithTime < todayStartMs)
-    )
+): boolean => {
+  // A dueDay stamped by the "add to Today" flow is NOT a user-picked due
+  // date — the task was just parked on Today. Don't count it as overdue,
+  // otherwise every unfinished-Today task lights up red once the day
+  // rolls over. See task.model.ts _dueDayAutoSetOnToday, issue #20.
+  if (task._dueDayAutoSetOnToday) {
+    return false;
+  }
+  // String comparison works because dueDay is YYYY-MM-DD (lexicographically
+  // sortable), avoiding timezone conversion issues.
+  return !!(
+    (task.dueDay && isDBDateStr(task.dueDay) && task.dueDay < todayStr) ||
+    (task.dueWithTime && task.dueWithTime < todayStartMs)
   );
+};
 
 /**
  * Pure predicate for "is this task overdue" — its due date is before the logical

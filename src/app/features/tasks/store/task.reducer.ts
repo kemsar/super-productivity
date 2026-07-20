@@ -687,6 +687,17 @@ export const taskReducer = createReducer<TaskState>(
   }),
 
   on(PlannerActions.planTaskForDay, (state, { task, day }) => {
+    // planTaskForDay is the planner's "drop on a specific day" gesture —
+    // an explicit user commit. Clear the auto-set-on-Today marker (only if
+    // set) so the task's dueDay behaves like a normal user-set date going
+    // forward. The "add to Today" flow dispatches planTasksForToday
+    // instead (see handlePlanTasksForToday), which is where the marker
+    // gets stamped. See task.model.ts _dueDayAutoSetOnToday, issue #20.
+    const src = state.entities[task.id];
+    const clearAutoSet =
+      src && (src as Task)._dueDayAutoSetOnToday === true
+        ? { _dueDayAutoSetOnToday: undefined }
+        : {};
     return taskAdapter.updateOne(
       {
         id: task.id,
@@ -694,6 +705,7 @@ export const taskReducer = createReducer<TaskState>(
           dueDay: day,
           dueWithTime: undefined,
           remindAt: undefined,
+          ...clearAutoSet,
         },
       },
       state,

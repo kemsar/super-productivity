@@ -232,4 +232,67 @@ describe('TaskTitleComponent', () => {
       expect(blurSpy).not.toHaveBeenCalled();
     });
   });
+
+  describe('clickToEdit input (issue #13)', () => {
+    it('enters edit mode on click by default', () => {
+      component.tmpValue.set('Test task');
+      fixture.detectChanges();
+
+      const clickEvent = new MouseEvent('click', { bubbles: true });
+      Object.defineProperty(clickEvent, 'target', {
+        value: document.createElement('span'),
+        enumerable: true,
+      });
+
+      component.onClick(clickEvent);
+
+      expect(component.isEditing()).toBe(true);
+    });
+
+    it('does not enter edit mode on click when clickToEdit is false', () => {
+      fixture.componentRef.setInput('clickToEdit', false);
+      component.tmpValue.set('Test task');
+      fixture.detectChanges();
+
+      const clickEvent = new MouseEvent('click', { bubbles: true });
+      Object.defineProperty(clickEvent, 'target', {
+        value: document.createElement('span'),
+        enumerable: true,
+      });
+
+      component.onClick(clickEvent);
+
+      expect(component.isEditing()).toBe(false);
+    });
+
+    it('lets click bubble to parent when clickToEdit is false', () => {
+      // Task rows rely on this: they set clickToEdit=false and listen on the
+      // wrapper for the click to open the detail panel (issue #13). If
+      // task-title stopped propagation, the wrapper would never fire.
+      fixture.componentRef.setInput('clickToEdit', false);
+      component.tmpValue.set('Test task');
+      fixture.detectChanges();
+
+      const clickEvent = new MouseEvent('click', { bubbles: true });
+      Object.defineProperty(clickEvent, 'target', {
+        value: document.createElement('span'),
+        enumerable: true,
+      });
+      const stopPropagationSpy = spyOn(clickEvent, 'stopPropagation');
+
+      component.onClick(clickEvent);
+
+      expect(stopPropagationSpy).not.toHaveBeenCalled();
+    });
+
+    it('still enters edit mode via focusInput() when clickToEdit is false', () => {
+      fixture.componentRef.setInput('clickToEdit', false);
+      component.tmpValue.set('Test task');
+      fixture.detectChanges();
+
+      component.focusInput();
+
+      expect(component.isEditing()).toBe(true);
+    });
+  });
 });

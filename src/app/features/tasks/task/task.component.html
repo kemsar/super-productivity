@@ -41,6 +41,7 @@
             #taskTitleEditEl
             (valueEdited)="updateTaskTitleIfChanged($event)"
             [value]="t.title"
+            [clickToEdit]="false"
             class="task-title"
           ></task-title>
 
@@ -263,7 +264,7 @@
           <div>
             @if (isShowToggleButton()) {
               <button
-                (click)="onToggleDetailPanelBtnClick($event)"
+                (click)="onChatIconClick($event)"
                 title="{{ T.F.TASK.CMP.TOGGLE_DETAIL_PANEL | translate }}  {{
                   kb.taskToggleDetailPanelOpen
                     ? '[' + kb.taskToggleDetailPanelOpen + ']'

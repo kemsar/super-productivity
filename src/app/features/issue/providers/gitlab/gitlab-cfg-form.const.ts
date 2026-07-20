@@ -1,3 +1,4 @@
+import { FormlyFieldConfig } from '@ngx-formly/core';
 import { T } from '../../../../t.const';
 import {
   ConfigFormSection,
@@ -8,6 +9,52 @@ import {
   CROSS_ORIGIN_WARNING,
   ISSUE_PROVIDER_COMMON_FORM_FIELDS,
 } from '../../common-issue-form-stuff.const';
+
+// Contextual override for the shared default-project field: in group mode
+// the "None" value on the parent provider triggers per-issue routing via the
+// tree-import mapping (see gitlab-common-interfaces.service.getAddTaskDataForCfg),
+// so relabel that option to describe the actual behavior. The label switches
+// whenever the config is in group mode — even before an import has populated
+// the mapping — so users can see the routing option while they're setting up
+// the "Generate SP tree on save" checkbox.
+const _isGroupMode = (model: unknown): boolean =>
+  !!model && (model as { sourceMode?: string }).sourceMode === 'group';
+const gitlabCommonFields: LimitedFormlyFieldConfig<IssueProviderGitlab>[] =
+  ISSUE_PROVIDER_COMMON_FORM_FIELDS.map((field) => {
+    if (field.key === 'defaultProjectId') {
+      return {
+        ...field,
+        expressions: {
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          'props.defaultLabel': (f: FormlyFieldConfig) =>
+            _isGroupMode(f.model)
+              ? T.F.GITLAB.FORM.DEFAULT_PROJECT_TREE_ROUTED
+              : T.G.NONE,
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          'props.description': (f: FormlyFieldConfig) =>
+            _isGroupMode(f.model)
+              ? T.F.GITLAB.FORM.DEFAULT_PROJECT_TREE_ROUTED_HINT
+              : T.F.ISSUE.DEFAULT_PROJECT_DESCRIPTION,
+        },
+      };
+    }
+    if (field.key === 'isAutoAddToBacklog') {
+      // The shared rule disables auto-import unless a defaultProjectId is set.
+      // Tree-import group providers deliberately have no default (routing
+      // happens per-issue via treeImportMapping — see
+      // gitlab-common-interfaces.service.getAddTaskDataForCfg), so allow the
+      // checkbox in group mode regardless.
+      return {
+        ...field,
+        expressions: {
+          // eslint-disable-next-line @typescript-eslint/naming-convention
+          'props.disabled': (f: FormlyFieldConfig) =>
+            !_isGroupMode(f.model) && !f.model?.defaultProjectId,
+        },
+      };
+    }
+    return field;
+  });
 // A GitLab project reference is EITHER a numeric project ID OR a namespace-qualified
 // path (`group/project`, subgroups, or the `%2F`-encoded form) — the REST API has no
 // way to resolve a project by a bare slug, so a single-segment name like `test_config`
@@ -137,7 +184,7 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
             /^(http(s)?:\/\/)?(localhost|[\w.\-]+(?:\.[\w\.\-]+)+)(:\d+)?(\/[^\s]*)?$/i,
         },
       },
-      ...ISSUE_PROVIDER_COMMON_FORM_FIELDS,
+      ...gitlabCommonFields,
       {
         key: 'filterUsername',
         type: 'input',
@@ -165,12 +212,32 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
         },
       },
       {
+        key: 'isSyncLabelsAsTags',
+        type: 'checkbox',
+        templateOptions: {
+          label: T.F.GITLAB.FORM.SYNC_LABELS_AS_TAGS,
+          description: T.F.GITLAB.FORM.SYNC_LABELS_AS_TAGS_DESCRIPTION,
+        },
+      },
+      {
         key: 'pollIntervalMinutes',
         type: 'input',
         templateOptions: {
           label: T.F.GITLAB.FORM.POLL_INTERVAL_MINUTES,
           type: 'number',
           min: 1,
+        },
+      },
+      // Bot IDs for the aging-issues view (issue #18). Stored as a CSV
+      // string on cfg so the form can be a plain text input; the GitLab
+      // common-interfaces service parses it at read time. Users can paste
+      // the same value they'd use for the digest's BOT_IDS env.
+      {
+        key: 'botAuthorIds',
+        type: 'input',
+        templateOptions: {
+          label: T.F.GITLAB.FORM.BOT_AUTHOR_IDS,
+          description: T.F.GITLAB.FORM.BOT_AUTHOR_IDS_DESCRIPTION,
         },
       },
     ],

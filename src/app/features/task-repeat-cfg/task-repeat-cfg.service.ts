@@ -382,6 +382,19 @@ export class TaskRepeatCfgService {
     isAddToBottom: boolean;
   } {
     const taskId = getRepeatableTaskId(taskRepeatCfg.id, dueDay);
+    // Propagate remote-issue linkage onto each spawned instance so
+    // recurring reminders for an issue keep the reference (issue #17).
+    // Two-way sync must skip isDone push for these — see the guard in
+    // issue-two-way-sync.effects.ts.
+    const issueFields =
+      taskRepeatCfg.issueId && taskRepeatCfg.issueType && taskRepeatCfg.issueProviderId
+        ? {
+            issueId: taskRepeatCfg.issueId,
+            issueType: taskRepeatCfg.issueType,
+            issueProviderId: taskRepeatCfg.issueProviderId,
+            issueWasUpdated: false,
+          }
+        : {};
     return {
       task: this._taskService.createNewTaskWithDefaults({
         title: taskRepeatCfg.title,
@@ -393,6 +406,7 @@ export class TaskRepeatCfgService {
           notes: taskRepeatCfg.notes || '',
           dueDay,
           tagIds: taskRepeatCfg.tagIds.filter((tagId) => tagId !== TODAY_TAG.id),
+          ...issueFields,
         },
       }),
       isAddToBottom: taskRepeatCfg.order > 0,

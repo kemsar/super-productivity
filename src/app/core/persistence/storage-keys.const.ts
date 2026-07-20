@@ -78,6 +78,10 @@ export enum LS {
   WEB_APP_INSTALL = 'WEB_APP_INSTALL',
 
   IS_ADD_TO_BOTTOM = 'SUP_IS_ADD_TO_BOTTOM',
+  // Whether the add-task bar's issue-search mode is on. Default `true` so
+  // fuzzy suggestions appear as the user types; can be toggled off to hide
+  // the suggestion panel. See issue #22.
+  IS_ADD_TASK_ISSUE_SEARCH = 'SUP_IS_ADD_TASK_ISSUE_SEARCH',
 
   FOCUS_MODE_MODE = 'FOCUS_MODE_MODE',
   LAST_COUNTDOWN_DURATION = 'LAST_COUNTDOWN_DURATION',

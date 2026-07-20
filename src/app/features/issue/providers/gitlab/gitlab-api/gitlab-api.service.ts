@@ -11,7 +11,12 @@ import { EMPTY, forkJoin, Observable, of } from 'rxjs';
 import { SnackService } from 'src/app/core/snack/snack.service';
 
 import { GitlabCfg, GitlabSourceMode } from '../gitlab.model';
-import { GitlabOriginalComment, GitlabOriginalIssue } from './gitlab-api-responses';
+import {
+  GitlabOriginalComment,
+  GitlabOriginalGroupProject,
+  GitlabOriginalIssue,
+  GitlabOriginalSubgroup,
+} from './gitlab-api-responses';
 import { GITLAB_API_BASE_URL } from '../gitlab.const';
 import { T } from 'src/app/t.const';
 import {
@@ -165,6 +170,109 @@ export class GitlabApiService {
     ).pipe(take(1));
   }
 
+  /**
+   * Lists direct subgroups of the configured group. Callers recurse manually
+   * to build the full tree (per-level enables partial-failure tolerance —
+   * we can still create SP folders for the levels that loaded successfully).
+   */
+  getGroupSubgroups$(
+    groupIdOrPath: string,
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalSubgroup[]> {
+    const groupURL = assertTruthy(groupIdOrPath).toString().replace(/\//gi, '%2F');
+    return this._sendPaginatedRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/groups/${groupURL}/subgroups?order_by=path&sort=asc`,
+      },
+      cfg,
+    ).pipe(
+      take(1),
+      map((groups: GitlabOriginalSubgroup[]) => groups || []),
+    );
+  }
+
+  /**
+   * Lists projects directly under the given group. `include_subgroups=false`
+   * because the recursive walk is driven by getGroupSubgroups$ — this keeps
+   * the "which project belongs to which subgroup" information intact for the
+   * SP folder-tree build (which the flat subgroup-inclusive endpoint loses).
+   */
+  getGroupProjects$(
+    groupIdOrPath: string,
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalGroupProject[]> {
+    const groupURL = assertTruthy(groupIdOrPath).toString().replace(/\//gi, '%2F');
+    return this._sendPaginatedRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/groups/${groupURL}/projects?archived=false&order_by=path&sort=asc&include_subgroups=false`,
+      },
+      cfg,
+    ).pipe(
+      take(1),
+      map((projects: GitlabOriginalGroupProject[]) => projects || []),
+    );
+  }
+
+  /**
+   * POST /projects/:project/issues/:iid/notes — attaches a plain-text
+   * comment (GitLab calls them "notes"). Used by the bulk-edit "Add
+   * comment" action (issue #16 phase 4) and the comments dialog
+   * (issue #19). `isInternal` maps to GitLab's `internal` note flag,
+   * which flags a note as visible to project members only (formerly
+   * `confidential`; both names accepted by the API for BC).
+   */
+  postIssueNote$(
+    issueId: string,
+    body: string,
+    cfg: GitlabCfg,
+    isInternal: boolean = false,
+  ): Observable<unknown> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._issueApiLink(cfg, issueId)}/notes`,
+        method: 'POST',
+        data: isInternal ? { body, internal: true } : { body },
+      },
+      cfg,
+    );
+  }
+
+  /**
+   * PUT /projects/:project/issues/:iid/notes/:note_id — edits an existing
+   * note's body. GitLab only allows the note's author (or a project
+   * maintainer) to update; other callers get a 403. The `internal` flag
+   * is immutable server-side, so this endpoint only takes `body`.
+   */
+  updateIssueNote$(
+    issueId: string,
+    noteId: number,
+    body: string,
+    cfg: GitlabCfg,
+  ): Observable<unknown> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._issueApiLink(cfg, issueId)}/notes/${noteId}`,
+        method: 'PUT',
+        data: { body },
+      },
+      cfg,
+    );
+  }
+
+  /**
+   * DELETE /projects/:project/issues/:iid/notes/:note_id — removes a
+   * note. Same permission rules as edit: author or maintainer only.
+   */
+  deleteIssueNote$(issueId: string, noteId: number, cfg: GitlabCfg): Observable<unknown> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._issueApiLink(cfg, issueId)}/notes/${noteId}`,
+        method: 'DELETE',
+      },
+      cfg,
+    );
+  }
+
   addTimeSpentToIssue$(
     issueId: string,
     // NOTE: duration format is without space, e.g.: 1h23m
@@ -186,6 +294,36 @@ export class GitlabApiService {
           duration: duration,
           summary: 'Submitted via Super Productivity on ' + new Date(),
         },
+      },
+      cfg,
+    );
+  }
+
+  /**
+   * PUT /projects/:project/issues/:iid — updates labels via GitLab's
+   * `add_labels` and `remove_labels` comma-separated params. Using these
+   * partial params (rather than a full `labels` replace) is safer when the
+   * remote issue has labels we don't know about: we only touch the delta
+   * the user made in SP. Empty arrays are omitted.
+   */
+  updateIssueLabels$(
+    issueId: string,
+    add: string[],
+    remove: string[],
+    cfg: GitlabCfg,
+  ): Observable<unknown> {
+    const data: Record<string, string> = {};
+    if (add.length > 0) {
+      data.add_labels = add.join(',');
+    }
+    if (remove.length > 0) {
+      data.remove_labels = remove.join(',');
+    }
+    return this._sendRawRequest$(
+      {
+        url: this._issueApiLink(cfg, issueId),
+        method: 'PUT',
+        data,
       },
       cfg,
     );

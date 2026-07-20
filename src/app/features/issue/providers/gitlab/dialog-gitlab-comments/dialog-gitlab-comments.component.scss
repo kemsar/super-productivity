@@ -1,0 +1,148 @@
+.dialog-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+
+  .title-text {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.dialog-content {
+  min-width: 480px;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding-top: var(--s);
+}
+
+.state-msg {
+  color: var(--text-color-muted);
+  text-align: center;
+  padding: var(--s3);
+  margin: 0;
+
+  &.error {
+    color: var(--c-warn);
+  }
+}
+
+.comment {
+  padding: var(--s2);
+  background: var(--card-bg);
+  border: 1px solid var(--divider-color);
+  border-radius: var(--card-border-radius);
+
+  // Distinguish the issue-description "first message" from real comments —
+  // description sits above the thread as context, not part of the exchange.
+  &.description {
+    background: var(--bg-darker);
+    border-color: transparent;
+  }
+
+  // Internal notes get a warning tint so the visibility distinction is
+  // obvious at a glance without having to read the badge.
+  &.is-internal {
+    background: color-mix(in srgb, var(--c-warn) 8%, var(--card-bg));
+    border-color: color-mix(in srgb, var(--c-warn) 40%, var(--divider-color));
+  }
+
+  &.is-deleting {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .comment-actions {
+    display: inline-flex;
+    align-items: center;
+    margin-left: auto;
+    opacity: 0;
+    transition: opacity 120ms ease;
+  }
+
+  &:hover .comment-actions,
+  &.is-editing .comment-actions {
+    opacity: 1;
+  }
+}
+
+.edit-field {
+  width: 100%;
+  margin-top: var(--s);
+}
+
+.edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s);
+}
+
+.comment-header {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+  margin-bottom: var(--s-half);
+  font-size: 13px;
+
+  .author {
+    font-weight: 500;
+  }
+
+  .timestamp {
+    color: var(--text-color-muted);
+  }
+
+  .badge {
+    margin-left: auto;
+    padding: 0 var(--s-half);
+    border-radius: 4px;
+    background: var(--c-accent);
+    color: var(--c-accent-contrast);
+    font-size: 11px;
+    text-transform: uppercase;
+
+    // Internal-note badge sits alongside actions — the warning color
+    // reinforces the "restricted visibility" signal from the tinted body.
+    &.internal-badge {
+      background: var(--c-warn);
+      color: var(--c-warn-contrast, #fff);
+      margin-left: 0;
+    }
+  }
+}
+
+.comment-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s);
+  padding: var(--s2);
+}
+
+.composer-field {
+  width: 100%;
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s);
+
+  .internal-toggle {
+    margin-right: auto;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+}

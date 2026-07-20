@@ -39,6 +39,13 @@
   &.is-readonly {
     cursor: inherit;
   }
+
+  // Click-to-edit disabled: title acts as a click target for the parent
+  // (task row → detail panel, issue #13), so surface a pointer rather than a
+  // text I-beam. Editing still works via focusInput() from a nearby button.
+  &.is-click-passive:not(.is-editing) {
+    cursor: pointer;
+  }
 }
 
 .wrapper {
