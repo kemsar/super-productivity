@@ -54,6 +54,16 @@ export interface GitlabCfg extends BaseIssueProviderCfg {
    * them out anyway).
    */
   botAuthorIds?: string;
+  /**
+   * When true, adding an SP task in a project targeted by this GitLab
+   * provider auto-creates a matching GitLab issue via the two-way-sync
+   * effect. The task is retro-linked to the returned issue (title
+   * prefixed with `#<iid>`). Off by default: unlike Plainspace, existing
+   * GitLab-linked SP projects predate this feature and users often use
+   * SP as a lightweight overlay on top of GitLab, not a source of new
+   * issues. See issue #26.
+   */
+  isAutoCreateIssues?: boolean;
 }
 
 export interface GitlabTreeImportEntry {

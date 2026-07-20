@@ -253,6 +253,30 @@ export class GitlabApiService {
   }
 
   /**
+   * POST /projects/:projectRef/issues — creates a new issue in the given
+   * GitLab project. `projectRef` may be a numeric ID or a URL-encoded
+   * namespace path (`group/subgroup/repo`). Returns the raw response so
+   * the caller can extract `references.full` (the `<path>#<iid>` id
+   * format SP uses everywhere) plus the numeric iid for the task-title
+   * prefix. Used by the two-way-sync auto-create effect (issue #26).
+   */
+  createIssue$(
+    projectRef: string,
+    body: { title: string; description?: string; due_date?: string },
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalIssue> {
+    const projectURL = projectRef.replace(/\//gi, '%2F');
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/projects/${projectURL}/issues`,
+        method: 'POST',
+        data: body,
+      },
+      cfg,
+    ) as unknown as Observable<GitlabOriginalIssue>;
+  }
+
+  /**
    * DELETE /projects/:project/issues/:iid/notes/:note_id — removes a
    * note. Same permission rules as edit: author or maintainer only.
    */
