@@ -277,6 +277,36 @@ export class GitlabApiService {
   }
 
   /**
+   * PUT /projects/:projectRef/issues/:iid — updates existing issue fields.
+   * The `state_event` param is GitLab's peculiar close/reopen verb (it's
+   * NOT `state`); callers translate `isDone: true` → `state_event: 'close'`
+   * upstream. Any other body field (title, description, labels, due_date,
+   * assignee_ids, milestone_id, etc.) is passed through unchanged.
+   */
+  updateIssue$(
+    issueId: string,
+    body: {
+      state_event?: 'close' | 'reopen';
+      title?: string;
+      description?: string;
+      due_date?: string | null;
+      labels?: string;
+      assignee_ids?: number[];
+      milestone_id?: number | null;
+    },
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalIssue> {
+    return this._sendRawRequest$(
+      {
+        url: this._issueApiLink(cfg, issueId),
+        method: 'PUT',
+        data: body,
+      },
+      cfg,
+    ) as unknown as Observable<GitlabOriginalIssue>;
+  }
+
+  /**
    * DELETE /projects/:project/issues/:iid/notes/:note_id — removes a
    * note. Same permission rules as edit: author or maintainer only.
    */

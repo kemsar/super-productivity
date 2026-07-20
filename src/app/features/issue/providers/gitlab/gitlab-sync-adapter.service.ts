@@ -8,35 +8,59 @@ import { FieldMapping, FieldSyncConfig } from '../../two-way-sync/issue-sync.mod
 import { IssueLog } from '../../../../core/log';
 
 /**
- * Two-way sync adapter for GitLab (issue #26). Phase B scope: the
- * `createIssue` path only — auto-creating a GitLab issue when a task is
- * added to a GitLab-mapped SP project. Push-side field sync (title, isDone,
- * dueDay → GitLab on every task edit) is intentionally still off; that
- * would flip GitLab from "SP mirrors what you see in GitLab" into "SP is
- * the source of truth", which is a bigger UX commitment than Phase B
- * wants to make.
+ * Task ↔ issue field bridge. Kept small on purpose — closing a task in
+ * SP closes the GitLab issue (and reopening reopens it). Bigger fields
+ * (title/notes/dueDay) still stay SP-local for now; later phases opt in
+ * per-field.
  *
- * Push disabled via `getFieldMappings() = []` — the two-way-sync push
- * effect (`pushFieldsOnTaskUpdate$`) reads mappings to decide what to
- * push; an empty list is a clean short-circuit. Poll-side pulls continue
- * to work through `getFreshDataForIssueTask` on GitlabCommonInterfaces,
- * so tasks stay in step with GitLab as they always have.
+ * The mapping targets the READ-side field name `state` (`'opened'` |
+ * `'closed'`) so `extractSyncValues` / `computePushDecisions` can compare
+ * baseline vs remote via strict equality. The PUSH-side verb GitLab wants
+ * (`state_event: 'close' | 'reopen'`) is generated inside
+ * `pushChanges` — the field mapping stays honest about what it observes.
+ */
+const GITLAB_FIELD_MAPPINGS: FieldMapping[] = [
+  {
+    taskField: 'isDone',
+    issueField: 'state',
+    defaultDirection: 'pushOnly',
+    toIssueValue: (taskValue: unknown): 'opened' | 'closed' =>
+      taskValue ? 'closed' : 'opened',
+    toTaskValue: (issueValue: unknown): boolean => issueValue === 'closed',
+  },
+];
+
+/**
+ * Two-way sync adapter for GitLab (issue #26). Handles both
+ * auto-creation (`createIssue` on task add in a mapped project) and the
+ * push side for the small set of task fields explicitly enumerated in
+ * `GITLAB_FIELD_MAPPINGS` — currently just `isDone → state`, so closing
+ * a task in SP closes the underlying GitLab issue via a
+ * `state_event: 'close'` PUT (and reopening reopens it).
  *
- * Later phases layer on:
- *   - Phase C: post-create `workItemUpdate` for GitLab Work Item status.
- *   - Phase D: milestone + assignee resolution before createIssue.
- *   - Future: enable push-side field sync per-field via getFieldMappings.
+ * The wider push surface (title, description, dueDay, labels) stays off
+ * on purpose. Flipping any of those to bidirectional means SP silently
+ * overwrites GitLab-side edits during the reconciliation window, which
+ * is a bigger UX commitment than the "close SP task → close GitLab
+ * issue" convenience the current scope covers. Later phases opt more
+ * fields in one at a time.
+ *
+ * Poll-side pulls (GitLab → SP) continue to flow through
+ * `getFreshDataForIssueTask` on GitlabCommonInterfaces, so tasks stay
+ * in step with remote changes as they always have.
  */
 @Injectable({ providedIn: 'root' })
 export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   private readonly _api = inject(GitlabApiService);
 
   getFieldMappings(): FieldMapping[] {
-    // Push-side sync is intentionally off in Phase B — see class doc.
-    return [];
+    return GITLAB_FIELD_MAPPINGS;
   }
 
   getSyncConfig(_cfg: GitlabCfg): FieldSyncConfig {
+    // Individual per-field overrides can go here later (e.g. a per-cfg
+    // toggle to disable isDone push). Empty = fall through to each
+    // mapping's `defaultDirection`.
     return {};
   }
 
@@ -100,20 +124,33 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   }
 
   async pushChanges(
-    _issueId: string,
-    _changes: Record<string, unknown>,
-    _cfg: GitlabCfg,
+    issueId: string,
+    changes: Record<string, unknown>,
+    cfg: GitlabCfg,
   ): Promise<void> {
-    // No push-side field sync in Phase B (see class doc). getFieldMappings
-    // returns [] so this method never gets called with actual changes, but
-    // we implement it for interface conformance and to make the intent
-    // explicit if a future caller invokes it directly.
-    return;
+    // `changes` is keyed by ISSUE field name (see `_pushChanges$` in the
+    // two-way-sync effect). Only `state` is currently pushable — translate
+    // the mapping's 'opened'/'closed' output to GitLab's peculiar
+    // state_event verb. Extra fields land here as a no-op until later
+    // phases opt them in.
+    const body: {
+      state_event?: 'close' | 'reopen';
+    } = {};
+    if ('state' in changes) {
+      body.state_event = changes['state'] === 'closed' ? 'close' : 'reopen';
+    }
+    if (Object.keys(body).length === 0) {
+      return;
+    }
+    await firstValueFrom(this._api.updateIssue$(issueId, body, cfg));
   }
 
-  extractSyncValues(_issue: Record<string, unknown>): Record<string, unknown> {
-    // No push-side fields → no baseline needed.
-    return {};
+  extractSyncValues(issue: Record<string, unknown>): Record<string, unknown> {
+    // Baseline for the push-decisions comparator. Only fields the
+    // mapping tracks need entries — extra fields would just get ignored.
+    return {
+      state: issue['state'],
+    };
   }
 
   getIssueLastUpdated(issue: Record<string, unknown>): number {

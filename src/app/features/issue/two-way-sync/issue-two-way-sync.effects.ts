@@ -32,6 +32,7 @@ import { PlannerActions } from '../../planner/store/planner.actions';
 import { deleteTag, deleteTags } from '../../tag/store/tag.actions';
 import { IssueSyncAdapterResolverService } from './issue-sync-adapter-resolver.service';
 import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { RecentIssueCreationsService } from './recent-issue-creations.service';
 
 const SYNCABLE_TASK_FIELDS: ReadonlySet<string> = new Set([
   'isDone',
@@ -126,6 +127,7 @@ export class IssueTwoWaySyncEffects {
   private readonly _deletedTagTitlesSidecar = inject(DeletedTagTitlesSidecarService);
   private readonly _adapterResolver = inject(IssueSyncAdapterResolverService);
   private readonly _pluginRegistry = inject(PluginIssueProviderRegistryService);
+  private readonly _recentCreations = inject(RecentIssueCreationsService);
   private _syncOriginatedTaskIds = new Set<string>();
   private static readonly _MAX_SYNC_ORIGINATED_IDS = 1000;
 
@@ -329,6 +331,13 @@ export class IssueTwoWaySyncEffects {
                     ).pipe(
                       concatMap(async ({ issueId, issueNumber, issueData }) => {
                         this._trackSyncOriginatedTask(task.id);
+                        // Publish to the recent-creations cache the moment
+                        // the remote responds — the backlog-poll filter
+                        // reads this to skip issues we just created, even
+                        // when the poll's REST call landed BEFORE the
+                        // retro-link store dispatch below (issue #26
+                        // duplicate-on-first-create).
+                        this._recentCreations.markCreated(provider.id, issueId);
                         try {
                           const titlePrefix =
                             issueNumber != null ? `#${issueNumber} ` : '';

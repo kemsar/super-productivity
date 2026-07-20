@@ -67,6 +67,7 @@ import { GlobalProgressBarService } from '../../core-ui/global-progress-bar/glob
 import { NavigateToTaskService } from '../../core-ui/navigate-to-task/navigate-to-task.service';
 import { PluginIssueProviderAdapterService } from '../../plugins/issue-provider/plugin-issue-provider-adapter.service';
 import { PluginIssueProviderRegistryService } from '../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { RecentIssueCreationsService } from './two-way-sync/recent-issue-creations.service';
 
 @Injectable({
   providedIn: 'root',
@@ -94,6 +95,7 @@ export class IssueService {
   private _navigateToTaskService = inject(NavigateToTaskService);
   private _pluginAdapter = inject(PluginIssueProviderAdapterService);
   private _pluginRegistry = inject(PluginIssueProviderRegistryService);
+  private _recentCreations = inject(RecentIssueCreationsService);
 
   ISSUE_SERVICE_MAP: { [key: string]: IssueServiceInterface } = {
     [GITLAB_TYPE]: this._gitlabCommonInterfacesService,
@@ -270,21 +272,32 @@ export class IssueService {
       allExistingIssueIds,
     );
 
-    // Re-read the existing ids right before dispatching. Between the read
-    // above and the list-issues REST call we just awaited, another effect
-    // (most importantly `autoCreateIssueOnTaskAdd$`) may have retro-linked
-    // a locally-added task to a brand-new remote issue whose id also came
-    // back in the list. Filtering on the stale set duplicates it. Yield
-    // once so any queued microtasks (including the retro-link dispatch)
-    // land, then rebuild the set. See issue #26 duplicate-on-first-create.
+    // Two-layer dedupe against issue #26's duplicate-on-first-create race:
+    //   1. Refresh the store-derived id set right before filtering. Yields
+    //      a microtask so any queued retro-link dispatches from a
+    //      concurrent `autoCreateIssueOnTaskAdd$` land first. Catches the
+    //      case where GitLab responded and the store update ran while we
+    //      were awaiting `getNewIssuesToAddToBacklog`.
+    //   2. Additionally reject issues the auto-create effect published to
+    //      `RecentIssueCreationsService.markCreated` — a cache populated
+    //      the instant the remote responds, before the retro-link
+    //      dispatch. Covers the harder case where the remote POST is
+    //      still in flight past our re-read (network variance, slow-lane
+    //      GitLab), i.e. the list-issues call returned the just-created
+    //      issue before the store retro-link fired at all.
     await new Promise((resolve) => setTimeout(resolve, 0));
     const freshExistingIssueIds =
       (await this._taskService.getAllIssueIdsForProviderEverywhere(
         issueProviderId,
       )) as string[];
     const issuesToAdd: IssueDataReduced[] = potentialIssuesToAdd.filter(
-      (issue: IssueDataReduced): boolean =>
-        !freshExistingIssueIds.includes(issue.id as string),
+      (issue: IssueDataReduced): boolean => {
+        const issueIdStr = issue.id as string;
+        if (freshExistingIssueIds.includes(issueIdStr)) return false;
+        if (this._recentCreations.wasRecentlyCreated(issueProviderId, issueIdStr))
+          return false;
+        return true;
+      },
     );
 
     issuesToAdd.forEach((issue: IssueDataReduced) => {

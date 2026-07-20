@@ -26,8 +26,10 @@ describe('GitlabSyncAdapterService', () => {
   beforeEach(() => {
     apiSpy = jasmine.createSpyObj<GitlabApiService>('GitlabApiService', [
       'createIssue$',
+      'updateIssue$',
       'getById$',
     ]);
+    apiSpy.updateIssue$.and.returnValue(asIssue$({ state: 'closed' }));
 
     TestBed.configureTestingModule({
       providers: [
@@ -132,21 +134,42 @@ describe('GitlabSyncAdapterService', () => {
     });
   });
 
-  describe('push side (Phase B leaves this disabled)', () => {
-    it('reports empty field mappings so pushFieldsOnTaskUpdate short-circuits', () => {
-      expect(service.getFieldMappings()).toEqual([]);
-      expect(service.getSyncConfig(makeCfg())).toEqual({});
-      expect(service.extractSyncValues({})).toEqual({});
+  describe('push side (isDone → state via state_event PUT)', () => {
+    it('exposes the isDone mapping and reads issue.state as baseline', () => {
+      const mappings = service.getFieldMappings();
+      expect(mappings).toHaveSize(1);
+      expect(mappings[0].taskField).toBe('isDone');
+      expect(mappings[0].issueField).toBe('state');
+      expect(service.extractSyncValues({ state: 'closed' })).toEqual({
+        state: 'closed',
+      });
     });
 
-    it('pushChanges is a no-op — resolves without calling the API', async () => {
-      const result = await service.pushChanges(
+    it('translates a state=closed change to state_event=close on the PUT', async () => {
+      await service.pushChanges('mygroup/repo#1', { state: 'closed' }, makeCfg());
+      expect(apiSpy.updateIssue$).toHaveBeenCalledWith(
         'mygroup/repo#1',
-        { title: 'x' },
+        { state_event: 'close' },
+        jasmine.any(Object),
+      );
+    });
+
+    it('translates a state=opened change to state_event=reopen on the PUT', async () => {
+      await service.pushChanges('mygroup/repo#1', { state: 'opened' }, makeCfg());
+      expect(apiSpy.updateIssue$).toHaveBeenCalledWith(
+        'mygroup/repo#1',
+        { state_event: 'reopen' },
+        jasmine.any(Object),
+      );
+    });
+
+    it('no-ops when the change bag has no push-mapped fields', async () => {
+      await service.pushChanges(
+        'mygroup/repo#1',
+        { title: 'ignored for now' },
         makeCfg(),
       );
-      expect(result).toBeUndefined();
-      expect(apiSpy.createIssue$).not.toHaveBeenCalled();
+      expect(apiSpy.updateIssue$).not.toHaveBeenCalled();
     });
   });
 });

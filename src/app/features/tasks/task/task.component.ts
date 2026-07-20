@@ -1049,17 +1049,30 @@ export class TaskComponent implements OnDestroy, AfterViewInit {
    * Repurposes the row's chat bubble (issue #19) for GitLab-linked tasks:
    * clicking opens a comments/discussion dialog instead of the detail
    * panel — the panel is already reachable via the row's main click area
-   * (issue #13). Other icon states (close when selected, update badge
-   * when issueWasUpdated) still route through the original toggle handler
-   * so the badge-dismiss + selection-close semantics stay intact.
+   * (issue #13). Also routes the 'update' icon state (new GitLab activity
+   * detected by poll) to the same dialog + marks the issue as read, so a
+   * single click surfaces the incoming comment instead of dumping the
+   * user in the detail panel to look for it. Only the 'close' state
+   * (task selected) still routes through the original toggle handler for
+   * the selection-close semantics.
    */
   async onChatIconClick(ev?: MouseEvent): Promise<void> {
     const task = this.task();
-    const isChatState = this.toggleButtonIcon() === 'chat';
-    if (isChatState && task.issueType === GITLAB_TYPE && task.issueId) {
+    const iconState = this.toggleButtonIcon();
+    const isGitlab = task.issueType === GITLAB_TYPE && !!task.issueId;
+    const shouldOpenCommentsDialog =
+      isGitlab && (iconState === 'chat' || iconState === 'update');
+    if (shouldOpenCommentsDialog) {
       if (ev) {
         ev.preventDefault();
         ev.stopPropagation();
+      }
+      // Clear the "unread" badge as we open the dialog — the user is about
+      // to look at what's new (issue #26 follow-up: fixes "new comments
+      // don't appear" by routing the update-icon click here instead of the
+      // detail panel).
+      if (task.issueWasUpdated) {
+        this._taskService.markIssueUpdatesAsRead(task.id);
       }
       const { DialogGitlabCommentsComponent } =
         await import('../../issue/providers/gitlab/dialog-gitlab-comments/dialog-gitlab-comments.component');
