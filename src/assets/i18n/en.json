@@ -2558,6 +2558,7 @@
       "EXPAND_SUB_TASKS": "Expand subtasks",
       "GLOBAL_ADD_NOTE": "Add new note",
       "GLOBAL_ADD_TASK": "Add new task",
+      "GLOBAL_QUICK_ADD": "Open quick-add overlay (borderless, over any app)",
       "GLOBAL_SHOW_HIDE": "Show/hide Super Productivity",
       "GLOBAL_TOGGLE_TASK_START": "Start/stop time tracking for last active task",
       "GLOBAL_TOGGLE_TASK_WIDGET": "Show/hide task widget",
