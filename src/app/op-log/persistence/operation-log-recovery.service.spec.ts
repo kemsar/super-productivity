@@ -6,7 +6,8 @@ import { LegacyPfDbService } from '../../core/persistence/legacy-pf-db.service';
 import { ClientIdService } from '../../core/util/client-id.service';
 import { ActionType, OpType } from '../core/operation.types';
 import { ValidateStateService } from '../validation/validate-state.service';
-import { SnackService } from '../../core/snack/snack.service';
+import { LockService } from '../sync/lock.service';
+import { LOCK_NAMES } from '../core/operation-log.const';
 
 describe('OperationLogRecoveryService', () => {
   let service: OperationLogRecoveryService;
@@ -15,13 +16,15 @@ describe('OperationLogRecoveryService', () => {
   let mockLegacyPfDb: jasmine.SpyObj<LegacyPfDbService>;
   let mockClientIdService: jasmine.SpyObj<ClientIdService>;
   let mockValidateStateService: jasmine.SpyObj<ValidateStateService>;
-  let mockSnackService: jasmine.SpyObj<SnackService>;
+  let mockLockService: jasmine.SpyObj<LockService>;
 
   beforeEach(() => {
     mockStore = jasmine.createSpyObj('Store', ['dispatch']);
     mockOpLogStore = jasmine.createSpyObj('OperationLogStoreService', [
       'append',
+      'appendRecoveryOperationAndSnapshot',
       'getLastSeq',
+      'loadStateCache',
       'saveStateCache',
       'setVectorClock',
       'getPendingRemoteOps',
@@ -33,6 +36,8 @@ describe('OperationLogRecoveryService', () => {
       'getUnsynced',
     ]);
     mockOpLogStore.setVectorClock.and.resolveTo(undefined);
+    mockOpLogStore.getLastSeq.and.resolveTo(0);
+    mockOpLogStore.loadStateCache.and.resolveTo(null);
     mockOpLogStore.recoverLegacyTerminalRemoteFailures.and.resolveTo(0);
     mockLegacyPfDb = jasmine.createSpyObj('LegacyPfDbService', [
       'hasUsableEntityData',
@@ -41,17 +46,13 @@ describe('OperationLogRecoveryService', () => {
     mockClientIdService = jasmine.createSpyObj('ClientIdService', ['loadClientId']);
     mockValidateStateService = jasmine.createSpyObj('ValidateStateService', [
       'validateState',
-      'validateAndRepairWithoutConfirm',
     ]);
+    mockLockService = jasmine.createSpyObj('LockService', ['request']);
+    mockLockService.request.and.callFake(async (_lockName, callback) => callback());
     mockValidateStateService.validateState.and.resolveTo({
       isValid: true,
       typiaErrors: [],
     });
-    mockValidateStateService.validateAndRepairWithoutConfirm.and.resolveTo({
-      isValid: true,
-      wasRepaired: false,
-    });
-    mockSnackService = jasmine.createSpyObj('SnackService', ['open']);
 
     TestBed.configureTestingModule({
       providers: [
@@ -61,7 +62,7 @@ describe('OperationLogRecoveryService', () => {
         { provide: LegacyPfDbService, useValue: mockLegacyPfDb },
         { provide: ClientIdService, useValue: mockClientIdService },
         { provide: ValidateStateService, useValue: mockValidateStateService },
-        { provide: SnackService, useValue: mockSnackService },
+        { provide: LockService, useValue: mockLockService },
       ],
     });
     service = TestBed.inject(OperationLogRecoveryService);
@@ -74,20 +75,34 @@ describe('OperationLogRecoveryService', () => {
       mockLegacyPfDb.loadAllEntityData.and.resolveTo(legacyData as any);
       mockClientIdService.loadClientId.and.resolveTo('testClient');
       mockOpLogStore.append.and.resolveTo(undefined);
-      mockOpLogStore.getLastSeq.and.resolveTo(1);
+      mockOpLogStore.getLastSeq.and.returnValues(Promise.resolve(0), Promise.resolve(1));
       mockOpLogStore.saveStateCache.and.resolveTo(undefined);
 
       await service.attemptRecovery();
 
-      expect(mockOpLogStore.append).toHaveBeenCalledWith(
+      expect(
+        (
+          mockOpLogStore as unknown as {
+            appendRecoveryOperationAndSnapshot: jasmine.Spy;
+          }
+        ).appendRecoveryOperationAndSnapshot,
+      ).toHaveBeenCalledWith(
         jasmine.objectContaining({
           actionType: ActionType.RECOVERY_DATA_IMPORT,
           opType: OpType.Batch,
           entityType: 'RECOVERY',
           payload: legacyData,
         }),
+        legacyData,
       );
+      expect(mockOpLogStore.append).not.toHaveBeenCalled();
+      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+      expect(mockOpLogStore.setVectorClock).not.toHaveBeenCalled();
       expect(mockStore.dispatch).toHaveBeenCalled();
+      expect(mockLockService.request).toHaveBeenCalledWith(
+        LOCK_NAMES.OPERATION_LOG,
+        jasmine.any(Function),
+      );
     });
 
     it('should not recover when no usable legacy data exists', async () => {
@@ -100,11 +115,48 @@ describe('OperationLogRecoveryService', () => {
       expect(mockStore.dispatch).not.toHaveBeenCalled();
     });
 
-    it('should handle database access errors gracefully', async () => {
+    it('should refuse recovery when a SUP_OPS snapshot exists', async () => {
+      mockOpLogStore.loadStateCache.and.resolveTo({ state: {} } as any);
+
+      await expectAsync(service.attemptRecovery()).toBeRejectedWithError(
+        /Refusing legacy recovery.*snapshot/i,
+      );
+
+      expect(mockLegacyPfDb.hasUsableEntityData).not.toHaveBeenCalled();
+      expect(mockOpLogStore.append).not.toHaveBeenCalled();
+      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+    });
+
+    it('should refuse recovery when the SUP_OPS log is non-empty', async () => {
+      mockOpLogStore.getLastSeq.and.resolveTo(3);
+
+      await expectAsync(service.attemptRecovery()).toBeRejectedWithError(
+        /Refusing legacy recovery.*operation log/i,
+      );
+
+      expect(mockLegacyPfDb.hasUsableEntityData).not.toHaveBeenCalled();
+      expect(mockOpLogStore.append).not.toHaveBeenCalled();
+      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+    });
+
+    it('should propagate SUP_OPS inspection errors without attempting writes', async () => {
+      mockOpLogStore.loadStateCache.and.rejectWith(new Error('SUP_OPS unavailable'));
+
+      await expectAsync(service.attemptRecovery()).toBeRejectedWithError(
+        'SUP_OPS unavailable',
+      );
+
+      expect(mockLegacyPfDb.hasUsableEntityData).not.toHaveBeenCalled();
+      expect(mockOpLogStore.append).not.toHaveBeenCalled();
+      expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
+    });
+
+    it('should propagate legacy database access errors', async () => {
       mockLegacyPfDb.hasUsableEntityData.and.rejectWith(new Error('Database error'));
 
-      // Should not throw
-      await expectAsync(service.attemptRecovery()).toBeResolved();
+      await expectAsync(service.attemptRecovery()).toBeRejectedWithError(
+        'Database error',
+      );
       expect(mockOpLogStore.append).not.toHaveBeenCalled();
     });
   });
@@ -121,7 +173,7 @@ describe('OperationLogRecoveryService', () => {
 
       await service.recoverFromLegacyData(legacyData);
 
-      expect(mockOpLogStore.append).toHaveBeenCalledWith(
+      expect(mockOpLogStore.appendRecoveryOperationAndSnapshot).toHaveBeenCalledWith(
         jasmine.objectContaining({
           actionType: ActionType.RECOVERY_DATA_IMPORT,
           opType: OpType.Batch,
@@ -131,6 +183,7 @@ describe('OperationLogRecoveryService', () => {
           clientId: 'testClient',
           vectorClock: { testClient: 1 },
         }),
+        legacyData,
       );
     });
 
@@ -142,7 +195,7 @@ describe('OperationLogRecoveryService', () => {
       );
     });
 
-    it('should save state cache after recovery', async () => {
+    it('should pass recovered state to the atomic persistence boundary', async () => {
       const legacyData = { task: { ids: ['task1'] } };
       mockClientIdService.loadClientId.and.resolveTo('testClient');
       mockOpLogStore.append.and.resolveTo(undefined);
@@ -151,16 +204,13 @@ describe('OperationLogRecoveryService', () => {
 
       await service.recoverFromLegacyData(legacyData);
 
-      expect(mockOpLogStore.saveStateCache).toHaveBeenCalledWith(
-        jasmine.objectContaining({
-          state: legacyData,
-          lastAppliedOpSeq: 5,
-          vectorClock: { testClient: 1 },
-        }),
+      expect(mockOpLogStore.appendRecoveryOperationAndSnapshot).toHaveBeenCalledWith(
+        jasmine.any(Object),
+        legacyData,
       );
     });
 
-    it('should persist vector clock to IndexedDB store after recovery', async () => {
+    it('should include the recovery clock in the atomically persisted operation', async () => {
       const legacyData = { task: { ids: ['task1'] } };
       mockClientIdService.loadClientId.and.resolveTo('testClient');
       mockOpLogStore.append.and.resolveTo(undefined);
@@ -169,18 +219,16 @@ describe('OperationLogRecoveryService', () => {
 
       await service.recoverFromLegacyData(legacyData);
 
-      expect(mockOpLogStore.setVectorClock).toHaveBeenCalledWith({ testClient: 1 });
+      expect(mockOpLogStore.appendRecoveryOperationAndSnapshot).toHaveBeenCalledWith(
+        jasmine.objectContaining({ vectorClock: { testClient: 1 } }),
+        legacyData,
+      );
     });
 
-    it('should reject invalid legacy data when repair also fails', async () => {
+    it('should reject invalid legacy data before writing or dispatching it', async () => {
       mockValidateStateService.validateState.and.resolveTo({
         isValid: false,
         typiaErrors: [{ path: '$input.task', expected: 'TaskState' }],
-      });
-      mockValidateStateService.validateAndRepairWithoutConfirm.and.resolveTo({
-        isValid: false,
-        wasRepaired: false,
-        error: 'Data repair not possible',
       });
 
       await expectAsync(
@@ -191,50 +239,6 @@ describe('OperationLogRecoveryService', () => {
       expect(mockOpLogStore.saveStateCache).not.toHaveBeenCalled();
       expect(mockOpLogStore.setVectorClock).not.toHaveBeenCalled();
       expect(mockStore.dispatch).not.toHaveBeenCalled();
-    });
-
-    it('should import repaired legacy data when validation fails but repair succeeds (#9)', async () => {
-      const legacyData = { task: { ids: [], entities: {} } };
-      const repairedData = {
-        task: { ids: [], entities: {} },
-        project: { ids: [], entities: {} },
-      };
-      mockValidateStateService.validateState.and.resolveTo({
-        isValid: false,
-        typiaErrors: [{ path: '$input.project', expected: 'ProjectState' }],
-      });
-      mockValidateStateService.validateAndRepairWithoutConfirm.and.resolveTo({
-        isValid: true,
-        wasRepaired: true,
-        repairedState: repairedData as Record<string, unknown>,
-        repairSummary: {
-          entityStateFixed: 0,
-          orphanedEntitiesRestored: 0,
-          invalidReferencesRemoved: 0,
-          relationshipsFixed: 0,
-          structureRepaired: 1,
-          typeErrorsFixed: 1,
-        },
-      });
-      mockClientIdService.loadClientId.and.resolveTo('testClient');
-      mockOpLogStore.append.and.resolveTo(undefined);
-      mockOpLogStore.getLastSeq.and.resolveTo(1);
-      mockOpLogStore.saveStateCache.and.resolveTo(undefined);
-
-      await service.recoverFromLegacyData(legacyData);
-
-      expect(mockOpLogStore.append).toHaveBeenCalledWith(
-        jasmine.objectContaining({
-          payload: repairedData,
-        }),
-      );
-      expect(mockOpLogStore.saveStateCache).toHaveBeenCalledWith(
-        jasmine.objectContaining({
-          state: repairedData,
-        }),
-      );
-      expect(mockStore.dispatch).toHaveBeenCalled();
-      expect(mockSnackService.open).toHaveBeenCalled();
     });
   });
 
@@ -249,28 +253,21 @@ describe('OperationLogRecoveryService', () => {
       expect(mockOpLogStore.markFailed).not.toHaveBeenCalled();
     });
 
-    it('should quarantine crash-interrupted ops for archive recovery', async () => {
+    it('should leave crash-interrupted ops pending until hydration replays their reducers', async () => {
       const now = Date.now();
       const pendingOps = [
         { seq: 1, op: { id: 'op1' }, appliedAt: now - 1000, source: 'remote' },
         { seq: 2, op: { id: 'op2' }, appliedAt: now - 2000, source: 'remote' },
       ] as any;
       mockOpLogStore.getPendingRemoteOps.and.resolveTo(pendingOps);
-      mockOpLogStore.markReducersCommittedAndMergeClocks.and.resolveTo(undefined);
+      const result = await service.recoverPendingRemoteOps();
 
-      await service.recoverPendingRemoteOps();
-
-      expect(mockOpLogStore.markReducersCommittedAndMergeClocks).toHaveBeenCalledWith(
-        [1, 2],
-        pendingOps.map((entry) => entry.op),
-      );
+      expect(result).toEqual(pendingOps);
+      expect(mockOpLogStore.markReducersCommittedAndMergeClocks).not.toHaveBeenCalled();
       expect(mockOpLogStore.markApplied).not.toHaveBeenCalled();
     });
 
-    it('should quarantine regardless of age without charging retry budget', async () => {
-      // The former PENDING_OPERATION_EXPIRY_MS split changed nothing: every
-      // crash-interrupted op lands in the same quarantine, and retryCount is
-      // only ever bumped for an actually attempted archive failure.
+    it('should return every pending op regardless of age without changing status', async () => {
       const now = Date.now();
       const weekMs = 7 * 24 * 60 * 60 * 1000;
       const pendingOps = [
@@ -283,14 +280,10 @@ describe('OperationLogRecoveryService', () => {
         },
       ] as any;
       mockOpLogStore.getPendingRemoteOps.and.resolveTo(pendingOps);
-      mockOpLogStore.markReducersCommittedAndMergeClocks.and.resolveTo(undefined);
+      const result = await service.recoverPendingRemoteOps();
 
-      await service.recoverPendingRemoteOps();
-
-      expect(mockOpLogStore.markReducersCommittedAndMergeClocks).toHaveBeenCalledWith(
-        [1, 2],
-        pendingOps.map((entry) => entry.op),
-      );
+      expect(result).toEqual(pendingOps);
+      expect(mockOpLogStore.markReducersCommittedAndMergeClocks).not.toHaveBeenCalled();
       expect(mockOpLogStore.markFailed).not.toHaveBeenCalled();
     });
   });

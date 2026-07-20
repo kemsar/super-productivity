@@ -9,14 +9,11 @@ import { VectorClockService } from '../sync/vector-clock.service';
 import { StateSnapshotService } from '../backup/state-snapshot.service';
 import { OpLog } from '../../core/log';
 import { extractEntityKeysFromState } from './extract-entity-keys';
-import { CLIENT_ID_PROVIDER, ClientIdProvider } from '../util/client-id.provider';
-import { limitVectorClockSize } from '../../core/util/vector-clock';
 import { ValidateStateService } from '../validation/validate-state.service';
 import { hasMeaningfulStateData } from '../validation/has-meaningful-state-data.util';
-import { LockService } from '../sync/lock.service';
-import { LOCK_NAMES } from '../core/operation-log.const';
-import { SnackService } from '../../core/snack/snack.service';
-import { T } from '../../t.const';
+import { OperationCaptureService } from '../capture/operation-capture.service';
+import { getPhantomChangeRisk } from '../capture/phantom-change-guard.util';
+import { OperationWriteFlushService } from '../sync/operation-write-flush.service';
 
 type StateCache = MigratableStateCache;
 
@@ -38,9 +35,8 @@ export class OperationLogSnapshotService {
   private stateSnapshotService = inject(StateSnapshotService);
   private schemaMigrationService = inject(SchemaMigrationService);
   private validateStateService = inject(ValidateStateService);
-  private clientIdProvider: ClientIdProvider = inject(CLIENT_ID_PROVIDER);
-  private lockService = inject(LockService);
-  private snackService = inject(SnackService);
+  private operationCapture = inject(OperationCaptureService);
+  private writeFlushService = inject(OperationWriteFlushService);
 
   /**
    * Validates that a snapshot has the expected structure and data.
@@ -85,29 +81,60 @@ export class OperationLogSnapshotService {
    * Saves the current NgRx state as a snapshot for faster future loads.
    * Called after replaying many operations to optimize next startup.
    *
-   * Wrapped in OPERATION_LOG lock to prevent a lost-update window: without
-   * the lock, an op appended between reading NgRx state and reading lastSeq
-   * would get a seq <= lastAppliedOpSeq but its effect would be absent from
-   * the snapshot. On next hydration the tail replay would start after that
-   * seq, silently skipping the op forever.
+   * Runs via flushThenRunExclusive (#8469): the capture pipeline is drained
+   * BEFORE the OPERATION_LOG lock is taken and the pending counter re-checked
+   * once inside it, so no counted action can be dispatched-but-unsequenced at
+   * the capture point. NgRx state mutates synchronously at dispatch while the
+   * op's seq is only assigned later in the persist effect — without the
+   * quiesce, an op whose reducer had already run but whose seq-write was
+   * still queued behind the lock would be baked into the snapshot state AND
+   * tail-replayed on the next boot, double-applying non-idempotent reducers
+   * (accumulating time/metric deltas, plain-append list branches).
    *
-   * Additionally, lastSeq is read BEFORE the state snapshot so the worst
-   * interleaving degrades to re-replay rather than a missed op. Most op types
-   * are idempotent on re-replay (entity-adapter CRUD/move/reorder), but some
-   * persistent ops accumulate onto current state and double-apply on re-replay
-   * (e.g. time-tracking/counter deltas and the plain-append branches of project
-   * task moves). This edge is unlikely (the save runs only during hydration) and
-   * strictly better than op-loss. The audited op list and a truly-lossless
-   * capture (quiesce the op-write queue before reading) are tracked in #8469.
+   * Deferred actions (buffered during a sync window, kept across windows
+   * after a failed drain) are NOT covered by the pending counter; they are
+   * handled by an explicit skip inside the body.
+   *
+   * Inside the lock, state is read first — synchronously, before any await
+   * can let a dispatch interleave — and lastSeq after. While the lock is held
+   * no new seq can be assigned, so every op with seq <= lastAppliedOpSeq has
+   * its effect in the captured state, and any later dispatch is absent from
+   * it and replays cleanly. This order relies on EVERY seq-assigning writer
+   * holding the OPERATION_LOG lock (persist effect, remote apply, repair,
+   * server migration — all do): a writer bypassing the lock would degrade
+   * this window to silent op-LOSS, strictly worse than the pre-quiesce
+   * re-replay bias.
+   *
+   * Failure (flush timeout, persistent dispatch activity) only skips the
+   * save: the snapshot is a boot-time cache and the op-log stays the source
+   * of truth.
+   *
+   * @returns Whether a snapshot was actually written. `false` means a guard
+   *   skipped it or the write failed — callers that branch on "is the on-disk
+   *   cache now current?" MUST use this rather than assuming resolution implies
+   *   a write (the hydrator's post-migration convergence gate does).
    */
-  async saveCurrentStateAsSnapshot(): Promise<void> {
+  async saveCurrentStateAsSnapshot(): Promise<boolean> {
     try {
-      await this.lockService.request(LOCK_NAMES.OPERATION_LOG, async () => {
-        // Read lastSeq BEFORE state snapshot — see JSDoc above.
-        // NOTE: compaction reads in the opposite order (state, then lastSeq);
-        // its failure mode if the lock is bypassed is missed-op data loss.
+      return await this.writeFlushService.flushThenRunExclusive(async () => {
+        // GUARD (#8751): never snapshot live state while it may contain
+        // changes with no durable op behind them (failed or still-pending
+        // writes, undrained deferred actions from the hydration sync window) —
+        // the cache write below would bake the phantom change in. Checked
+        // synchronously immediately before the snapshot read; skipping only
+        // costs a slower next boot.
+        const phantomRisk = getPhantomChangeRisk(this.operationCapture);
+        if (phantomRisk) {
+          OpLog.warn(
+            `OperationLogSnapshotService: Skipping snapshot save — ${phantomRisk} (#8751)`,
+          );
+          return false;
+        }
+
+        // Read state synchronously at the quiesce cutoff (no await before it)
+        // and lastSeq after — see JSDoc above.
+        const currentState = this.stateSnapshotService.getStateSnapshotForOperationLog();
         const lastSeq = await this.opLogStore.getLastSeq();
-        const currentState = this.stateSnapshotService.getStateSnapshot();
 
         // GUARD (#7892): never cache an empty/degraded state over a good one.
         // The snapshot is only a load-time cache — the op-log is the source of
@@ -121,19 +148,12 @@ export class OperationLogSnapshotService {
             'OperationLogSnapshotService: Skipping snapshot save — current state has no ' +
               'meaningful data (refusing to overwrite cache with empty state)',
           );
-          return;
+          return false;
         }
 
-        // Get current vector clock
+        // Get current vector clock; pruning happens inside saveStateCache
+        // (store-owned, #9096).
         const vectorClock = await this.vectorClockService.getCurrentVectorClock();
-
-        // Prune vector clock before persisting to prevent bloat (max 20 entries).
-        // Without this, clocks can grow unbounded across sync cycles and cause
-        // repeated conflict dialogs on every sync.
-        const clientId = await this.clientIdProvider.loadClientId();
-        const prunedClock = clientId
-          ? limitVectorClockSize(vectorClock, clientId)
-          : vectorClock;
 
         // Extract entity keys for conflict detection after compaction
         const snapshotEntityKeys = extractEntityKeysFromState(currentState);
@@ -142,17 +162,19 @@ export class OperationLogSnapshotService {
         await this.opLogStore.saveStateCache({
           state: currentState,
           lastAppliedOpSeq: lastSeq,
-          vectorClock: prunedClock,
+          vectorClock,
           compactedAt: Date.now(),
           schemaVersion: CURRENT_SCHEMA_VERSION,
           snapshotEntityKeys,
         });
 
         OpLog.normal('OperationLogSnapshotService: Saved new snapshot');
+        return true;
       });
     } catch (e) {
       // Don't fail hydration if snapshot save fails
       OpLog.warn('OperationLogSnapshotService: Failed to save snapshot', e);
+      return false;
     }
   }
 
@@ -160,9 +182,14 @@ export class OperationLogSnapshotService {
    * Migrates a snapshot with backup safety (A.7.12).
    * Creates a backup before migration and restores it if migration fails.
    *
+   * State-validation failures are non-fatal: the migrated snapshot is returned
+   * for hydration (unpersisted) rather than throwing. See the step-4 note.
+   *
    * @param snapshot - The snapshot to migrate
    * @returns The migrated snapshot
-   * @throws If migration fails and rollback also fails
+   * @throws On migration failure or metadata-validation failure. The backup is
+   *         rolled back first; if that rollback ALSO fails, a combined error is
+   *         thrown instead. State-validation failure does NOT throw (step 4).
    */
   async migrateSnapshotWithBackup(snapshot: StateCache): Promise<StateCache> {
     OpLog.normal(
@@ -182,48 +209,47 @@ export class OperationLogSnapshotService {
         throw new Error('Migrated snapshot metadata validation failed');
       }
 
-      // 4. Validate migrated snapshot state before persisting or clearing the backup.
-      // Otherwise an invalid current-schema cache could be trusted on next startup.
+      // 4. Validate migrated snapshot state before PERSISTING it — an invalid
+      // current-schema cache must not be trusted on next startup (Checkpoint B
+      // skips validation for a matching schema version). But a validation
+      // failure here is NOT fatal to hydration: many "invalid" shapes are
+      // reducer-healable — e.g. a snapshot from an older release missing a
+      // newly-required config field the loadAllData reducer backfills by
+      // default. Bailing to disaster recovery in that case bricks the app to an
+      // empty store on upgrade, even though the data is fine. So on failure we
+      // roll the on-disk cache back to the pre-migration backup (never persist
+      // the unvalidated migrated snapshot) yet still RETURN it, letting the
+      // hydrator load it through the reducer (which heals defaults) and boot
+      // with correct data.
       //
-      // If strict validation fails, attempt non-interactive repair before
-      // rolling back. Without this fallback the app enters a boot-then-reset
-      // loop whenever persisted data drifts from the schema (partial migration,
-      // an added required field, an old field with an unexpected shape) —
-      // strict-only rollback restores the same v1 snapshot that fails on the
-      // next launch too, so the store starts empty forever. See #9.
-      let snapshotToSave = migratedSnapshot;
+      // Caveat: this non-fatal path does NOT itself persist a clean snapshot.
+      // For fields with a migration backfill (below) validation passes and step 5
+      // persists a clean snapshot immediately, so that path is the real fix; this
+      // branch is the safety net for the not-yet-backfilled case. The hydrator
+      // completes it — see the post-migration convergence block in
+      // OperationLogHydratorService.hydrateStore, which persists a fresh
+      // CURRENT_SCHEMA_VERSION snapshot once the reducer-healed state validates.
       const validationResult = await this.validateStateService.validateState(
         migratedSnapshot.state as Record<string, unknown>,
       );
       if (!validationResult.isValid) {
         OpLog.warn(
-          'OperationLogSnapshotService: Migrated snapshot failed validation. Attempting repair...',
+          'OperationLogSnapshotService: Migrated snapshot failed validation — ' +
+            'restoring backup and hydrating unpersisted so the reducer can heal it.',
           {
             typiaErrorCount: validationResult.typiaErrors.length,
             crossModelError: validationResult.crossModelError,
           },
         );
-        const repairResult =
-          await this.validateStateService.validateAndRepairWithoutConfirm(
-            migratedSnapshot.state as Record<string, unknown>,
-          );
-        if (!repairResult.isValid || !repairResult.repairedState) {
-          throw new Error(
-            `Migrated snapshot validation failed (${validationResult.typiaErrors.length} typia errors` +
-              `${validationResult.crossModelError ? `, cross-model: ${validationResult.crossModelError}` : ''})` +
-              (repairResult.error ? ` — repair failed: ${repairResult.error}` : ''),
-          );
-        }
-        OpLog.warn(
-          'OperationLogSnapshotService: Repaired migrated snapshot after validation failure.',
-          { repairSummary: repairResult.repairSummary },
+        await this.opLogStore.restoreStateCacheFromBackup();
+        OpLog.normal(
+          'OperationLogSnapshotService: Backup restored; returning migrated snapshot for reducer-healed hydration.',
         );
-        snapshotToSave = { ...migratedSnapshot, state: repairResult.repairedState };
-        this._notifyRepairApplied();
+        return migratedSnapshot;
       }
 
       // 5. Save migrated snapshot
-      await this.opLogStore.saveStateCache(snapshotToSave);
+      await this.opLogStore.saveStateCache(migratedSnapshot);
 
       // 6. Clear backup on success
       await this.opLogStore.clearStateCacheBackup();
@@ -231,7 +257,7 @@ export class OperationLogSnapshotService {
         'OperationLogSnapshotService: Schema migration complete. Backup cleared.',
       );
 
-      return snapshotToSave;
+      return migratedSnapshot;
     } catch (e) {
       OpLog.err(
         'OperationLogSnapshotService: Schema migration failed. Restoring backup...',
@@ -259,23 +285,6 @@ export class OperationLogSnapshotService {
 
       // Re-throw original error after successful restore
       throw e;
-    }
-  }
-
-  /**
-   * Surfaces silent boot-time repair to the user. Without this, the app looks
-   * fine but the on-disk data was quietly patched — the user has no chance
-   * to review or export before continuing. Errors are swallowed because
-   * hydration must never fail because of a UI notification.
-   */
-  private _notifyRepairApplied(): void {
-    try {
-      this.snackService.open({
-        type: 'ERROR',
-        msg: T.F.SYNC.S.INTEGRITY_CHECK_FAILED,
-      });
-    } catch (err) {
-      OpLog.warn('OperationLogSnapshotService: Failed to emit repair notification', err);
     }
   }
 }

@@ -65,7 +65,7 @@ describe('ValidateStateService', () => {
 
     mockStateSnapshotService = jasmine.createSpyObj('StateSnapshotService', [
       'getStateSnapshot',
-      'getStateSnapshotAsync',
+      'getStateSnapshotForOperationLogAsync',
     ]);
     mockClientIdProvider = {
       loadClientId: jasmine
@@ -130,8 +130,8 @@ describe('ValidateStateService', () => {
         ],
       };
 
-      // Should repair
-      const result = await service.validateAndRepair(state);
+      // Should repair (interactive: user is prompted and confirms)
+      const result = await service.validateAndRepair(state, { interactive: true });
 
       expect(result.isValid).toBeTrue();
       expect(result.wasRepaired).toBeTrue();
@@ -176,8 +176,8 @@ describe('ValidateStateService', () => {
         ],
       };
 
-      // Should not repair when user declines
-      const result = await service.validateAndRepair(state);
+      // Should not repair when user declines (interactive: prompt is shown)
+      const result = await service.validateAndRepair(state, { interactive: true });
 
       expect(result.isValid).toBeFalse();
       expect(result.wasRepaired).toBeFalse();
@@ -187,56 +187,45 @@ describe('ValidateStateService', () => {
     }
   });
 
-  describe('validateAndRepairWithoutConfirm', () => {
-    it('should repair without prompting the user (#9)', async () => {
-      // Sentinel: fail loudly if the non-interactive path ever gains a confirm().
-      // Refresh a possibly-existing spy so its call log starts clean for this test.
-      let confirmSpy: jasmine.Spy;
-      if (jasmine.isSpy(window.confirm)) {
-        confirmSpy = window.confirm as unknown as jasmine.Spy;
-        confirmSpy.calls.reset();
-        confirmSpy.and.returnValue(false);
-      } else {
-        confirmSpy = spyOn(window, 'confirm').and.returnValue(false);
-      }
+  it('auto-repairs without prompting when interactive is false (#9026)', async () => {
+    // Non-interactive repair (automatic sync path) must never reach the blocking
+    // native confirm()/alert(): during background sync it would freeze the event
+    // loop and hold sp_op_log open for as long as the dialog sits there.
+    const originalEnvProduction = environment.production;
+    (environment as any).production = false;
 
+    const alertSpy = jasmine.isSpy(window.alert)
+      ? (window.alert as jasmine.Spy)
+      : spyOn(window, 'alert');
+    alertSpy.and.stub();
+    alertSpy.calls.reset();
+    const confirmSpy = jasmine.isSpy(window.confirm)
+      ? (window.confirm as jasmine.Spy)
+      : spyOn(window, 'confirm');
+    // If confirm were reached it would decline the repair, failing the
+    // assertions below loudly rather than silently.
+    confirmSpy.and.returnValue(false);
+    confirmSpy.calls.reset();
+
+    try {
       const state = createEmptyState();
-      // Introduce a fix-able corruption
       state.menuTree = {
         ...(state.menuTree as MenuTreeState),
         projectTree: [{ id: 'NON_EXISTENT_PROJECT_ID', k: MenuTreeKind.PROJECT }],
       };
 
-      const result = await service.validateAndRepairWithoutConfirm(state);
+      const result = await service.validateAndRepair(state, { interactive: false });
 
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(alertSpy).not.toHaveBeenCalled();
       expect(result.isValid).toBeTrue();
       expect(result.wasRepaired).toBeTrue();
-      expect(confirmSpy).not.toHaveBeenCalled();
       expect((result.repairedState!.menuTree as MenuTreeState).projectTree!.length).toBe(
         0,
       );
-    });
-
-    it('should return isValid=true and wasRepaired=false when state is already valid', async () => {
-      // Bypass the shared validateFull() so we test the branching on validateState
-      // rather than typia's judgement of the empty-state fixture.
-      spyOn(service, 'validateState').and.resolveTo({ isValid: true, typiaErrors: [] });
-
-      const result = await service.validateAndRepairWithoutConfirm(createEmptyState());
-
-      expect(result.isValid).toBeTrue();
-      expect(result.wasRepaired).toBeFalse();
-    });
-
-    it('should return an error when state is too corrupted to repair', async () => {
-      const state = { globalConfig: {} } as unknown as Record<string, unknown>;
-
-      const result = await service.validateAndRepairWithoutConfirm(state);
-
-      expect(result.isValid).toBeFalse();
-      expect(result.wasRepaired).toBeFalse();
-      expect(result.error).toContain('Data repair not possible');
-    });
+    } finally {
+      (environment as any).production = originalEnvProduction;
+    }
   });
 
   describe('records the critical-error signal (rating-prompt cooldown)', () => {
@@ -285,7 +274,9 @@ describe('ValidateStateService', () => {
       const result = await service.validateAndRepairCurrentState('test-context');
 
       expect(result).toBeTrue();
-      expect(mockStateSnapshotService.getStateSnapshotAsync).not.toHaveBeenCalled();
+      expect(
+        mockStateSnapshotService.getStateSnapshotForOperationLogAsync,
+      ).not.toHaveBeenCalled();
       expect(mockRepairService.createRepairOperation).not.toHaveBeenCalled();
       expect(store.dispatch).not.toHaveBeenCalled();
     });
@@ -302,7 +293,9 @@ describe('ValidateStateService', () => {
           projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
         };
         mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
-        mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+          invalidState as any,
+        );
         mockClientIdProvider.loadClientId.and.returnValue(Promise.resolve(null));
 
         const result = await service.validateAndRepairCurrentState('sync');
@@ -317,7 +310,9 @@ describe('ValidateStateService', () => {
     it('should pass skipLock option to repair service when callerHoldsLock is true', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
-      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
+      mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+        state as any,
+      );
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -340,7 +335,9 @@ describe('ValidateStateService', () => {
     it('should start/end hydration state for sync contexts', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
-      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
+      mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+        state as any,
+      );
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -368,7 +365,9 @@ describe('ValidateStateService', () => {
           projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
         };
         mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
-        mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+          invalidState as any,
+        );
 
         await service.validateAndRepairCurrentState('other-context');
 
@@ -390,7 +389,9 @@ describe('ValidateStateService', () => {
           projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
         };
         mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
-        mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+          invalidState as any,
+        );
         mockHydrationStateService.isApplyingRemoteOps.and.returnValue(true);
 
         await service.validateAndRepairCurrentState('sync');
@@ -406,7 +407,9 @@ describe('ValidateStateService', () => {
     it('should dispatch loadAllData with isRemote flag for sync contexts', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
-      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
+      mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+        state as any,
+      );
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -426,7 +429,9 @@ describe('ValidateStateService', () => {
     it('should dispatch loadAllData without isRemote flag for non-sync contexts', async () => {
       const state = createEmptyState();
       mockStateSnapshotService.getStateSnapshot.and.returnValue(state as any);
-      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(state as any);
+      mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+        state as any,
+      );
 
       // Mock validateAndRepair to return repaired state
       spyOn(service, 'validateAndRepair').and.resolveTo({
@@ -462,7 +467,7 @@ describe('ValidateStateService', () => {
       mockStateSnapshotService.getStateSnapshot.and.returnValue(
         createEmptyState() as any,
       );
-      mockStateSnapshotService.getStateSnapshotAsync.and.resolveTo(
+      mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
         stateWithArchive as any,
       );
 
@@ -476,7 +481,9 @@ describe('ValidateStateService', () => {
       await service.validateAndRepairCurrentState('sync');
 
       // The repair path must load the async snapshot (archives from IndexedDB).
-      expect(mockStateSnapshotService.getStateSnapshotAsync).toHaveBeenCalled();
+      expect(
+        mockStateSnapshotService.getStateSnapshotForOperationLogAsync,
+      ).toHaveBeenCalled();
 
       // The state fed into validation/repair must include the archive...
       const validatedState = validateAndRepairSpy.calls.mostRecent().args[0];
@@ -486,6 +493,50 @@ describe('ValidateStateService', () => {
       const repairedState = mockRepairService.createRepairOperation.calls.mostRecent()
         .args[0] as any;
       expect(repairedState.archiveYoung.task.ids).toEqual([archivedTaskId]);
+    });
+
+    // #9026: the sync repair path runs inside the sp_op_log lock during
+    // background sync, so it must never show a blocking native dialog. Drive a
+    // real repair (invalid menuTree) and assert neither confirm nor alert fires
+    // while the state is still repaired and a REPAIR op created.
+    it('never shows a blocking dialog on the sync repair path', async () => {
+      const originalEnvProduction = environment.production;
+      (environment as any).production = false;
+
+      const alertSpy = jasmine.isSpy(window.alert)
+        ? (window.alert as jasmine.Spy)
+        : spyOn(window, 'alert');
+      alertSpy.and.stub();
+      alertSpy.calls.reset();
+      const confirmSpy = jasmine.isSpy(window.confirm)
+        ? (window.confirm as jasmine.Spy)
+        : spyOn(window, 'confirm');
+      confirmSpy.and.returnValue(false);
+      confirmSpy.calls.reset();
+
+      try {
+        const invalidState = createEmptyState();
+        invalidState.menuTree = {
+          ...(invalidState.menuTree as MenuTreeState),
+          projectTree: [{ id: 'ORPHAN', k: MenuTreeKind.PROJECT }],
+        };
+        mockStateSnapshotService.getStateSnapshot.and.returnValue(invalidState as any);
+        mockStateSnapshotService.getStateSnapshotForOperationLogAsync.and.resolveTo(
+          invalidState as any,
+        );
+
+        const result = await service.validateAndRepairCurrentState('sync', {
+          callerHoldsLock: true,
+        });
+
+        expect(result).toBeTrue();
+        expect(confirmSpy).not.toHaveBeenCalled();
+        expect(alertSpy).not.toHaveBeenCalled();
+        // Repair still happened silently — the REPAIR op is created.
+        expect(mockRepairService.createRepairOperation).toHaveBeenCalled();
+      } finally {
+        (environment as any).production = originalEnvProduction;
+      }
     });
   });
 });
