@@ -111,14 +111,12 @@ const _createWindow = (): BrowserWindow => {
     quickAddWin = null;
   });
 
-  // Auto-hide on blur — matches Alfred/Raycast semantics. The window is a
-  // capture surface, not a persistent panel; if the user tabs away or clicks
-  // out, we assume they abandoned the entry.
-  win.on('blur', () => {
-    if (quickAddWin && !quickAddWin.isDestroyed()) {
-      quickAddWin.hide();
-    }
-  });
+  // Blur was originally wired to auto-hide the overlay (Alfred/Raycast
+  // semantics — click out = cancel). In practice macOS fires transient
+  // blurs constantly — notifications, spell-check popovers, IME candidate
+  // windows, mission-control preview — and each one made the overlay
+  // vanish mid-typing. Users have Esc and the close (frameless X-less
+  // hitting Cmd+W or Esc) to dismiss; that's enough. No more auto-hide.
 
   // Load the self-contained overlay HTML. Sits next to this file at the
   // electron/ root so electron-builder's `electron/**/*` glob picks it up
