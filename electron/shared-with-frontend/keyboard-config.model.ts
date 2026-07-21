@@ -2,6 +2,12 @@ export type KeyboardConfig = Readonly<{
   globalShowHide?: string | null;
   globalAddNote?: string | null;
   globalAddTask?: string | null;
+  /** Opens the borderless quick-add overlay window regardless of which app
+   *  has focus. Unlike `globalAddTask` (which raises the main SP window and
+   *  opens its add-task bar), this pops a small always-on-top window over
+   *  the current app so the user can capture without context-switching.
+   *  See issue #25. */
+  globalQuickAdd?: string | null;
   globalToggleTaskWidget?: string | null;
   toggleBacklog?: string | null;
   goToFocusMode?: string | null;
@@ -72,5 +78,6 @@ export const GLOBAL_KEY_CFG_KEYS: (keyof KeyboardConfig)[] = [
   'globalToggleTaskStart',
   'globalAddNote',
   'globalAddTask',
+  'globalQuickAdd',
   'globalToggleTaskWidget',
 ];

@@ -232,6 +232,14 @@ export const GITLAB_CONFIG_FORM: LimitedFormlyFieldConfig<IssueProviderGitlab>[]
         },
       },
       {
+        key: 'isAutoCreateIssues',
+        type: 'checkbox',
+        templateOptions: {
+          label: T.F.GITLAB.FORM.AUTO_CREATE_ISSUES,
+          description: T.F.GITLAB.FORM.AUTO_CREATE_ISSUES_DESCRIPTION,
+        },
+      },
+      {
         key: 'pollIntervalMinutes',
         type: 'input',
         templateOptions: {

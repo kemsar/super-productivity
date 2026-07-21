@@ -17,6 +17,7 @@ import { IssueProvider, IssueProviderKey } from '../issue.model';
 import { IssueLog } from '../../../core/log';
 import { HttpErrorResponse } from '@angular/common/http';
 import { CaldavSyncAdapterService } from '../providers/caldav/caldav-sync-adapter.service';
+import { GitlabSyncAdapterService } from '../providers/gitlab/gitlab-sync-adapter.service';
 import { PlainspaceSyncAdapterService } from '../providers/plainspace/plainspace-sync-adapter.service';
 import { SnackService } from '../../../core/snack/snack.service';
 import {
@@ -31,6 +32,7 @@ import { PlannerActions } from '../../planner/store/planner.actions';
 import { deleteTag, deleteTags } from '../../tag/store/tag.actions';
 import { IssueSyncAdapterResolverService } from './issue-sync-adapter-resolver.service';
 import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
+import { RecentIssueCreationsService } from './recent-issue-creations.service';
 
 const SYNCABLE_TASK_FIELDS: ReadonlySet<string> = new Set([
   'isDone',
@@ -125,6 +127,7 @@ export class IssueTwoWaySyncEffects {
   private readonly _deletedTagTitlesSidecar = inject(DeletedTagTitlesSidecarService);
   private readonly _adapterResolver = inject(IssueSyncAdapterResolverService);
   private readonly _pluginRegistry = inject(PluginIssueProviderRegistryService);
+  private readonly _recentCreations = inject(RecentIssueCreationsService);
   private _syncOriginatedTaskIds = new Set<string>();
   private static readonly _MAX_SYNC_ORIGINATED_IDS = 1000;
 
@@ -133,6 +136,11 @@ export class IssueTwoWaySyncEffects {
     this._adapterRegistry.register('CALDAV', caldavAdapter);
     const plainspaceAdapter = inject(PlainspaceSyncAdapterService);
     this._adapterRegistry.register('PLAINSPACE', plainspaceAdapter);
+    // GitLab adapter — auto-create-issue only (Phase B, issue #26). See
+    // GitlabSyncAdapterService's class doc for what's intentionally left
+    // out (push-side field sync).
+    const gitlabAdapter = inject(GitlabSyncAdapterService);
+    this._adapterRegistry.register('GITLAB', gitlabAdapter);
   }
 
   pushFieldsOnTaskUpdate$: Observable<unknown> = createEffect(
@@ -302,7 +310,8 @@ export class IssueTwoWaySyncEffects {
             map((providers) =>
               providers.find(
                 (p) =>
-                  p.defaultProjectId === task.projectId && this._hasAutoCreateEnabled(p),
+                  this._providerTargetsTaskProject(p, task.projectId) &&
+                  this._hasAutoCreateEnabled(p),
               ),
             ),
             filter((provider): provider is IssueProvider => !!provider),
@@ -315,9 +324,20 @@ export class IssueTwoWaySyncEffects {
                 .getCfgOnce$(provider.id, provider.issueProviderKey)
                 .pipe(
                   concatMap((cfg) =>
-                    from(adapter.createIssue!(task.title, cfg)).pipe(
+                    from(
+                      adapter.createIssue!(task.title, cfg, {
+                        projectId: task.projectId,
+                      }),
+                    ).pipe(
                       concatMap(async ({ issueId, issueNumber, issueData }) => {
                         this._trackSyncOriginatedTask(task.id);
+                        // Publish to the recent-creations cache the moment
+                        // the remote responds — the backlog-poll filter
+                        // reads this to skip issues we just created, even
+                        // when the poll's REST call landed BEFORE the
+                        // retro-link store dispatch below (issue #26
+                        // duplicate-on-first-create).
+                        this._recentCreations.markCreated(provider.id, issueId);
                         try {
                           const titlePrefix =
                             issueNumber != null ? `#${issueNumber} ` : '';
@@ -422,6 +442,35 @@ export class IssueTwoWaySyncEffects {
     }
   }
 
+  /**
+   * True if `provider` is the intended remote for tasks added to
+   * `taskProjectId`. Covers three shapes:
+   *   1. `defaultProjectId === taskProjectId` — the classic case where the
+   *      provider directly targets one SP project.
+   *   2. GitLab group provider with `treeImportMapping` (issue #10) — the
+   *      SP project id lives on the RHS of one of the mapping entries;
+   *      routing is per-issue at add-task time.
+   *   3. Plugin providers can bind through their own scheme; unchanged
+   *      here — they still rely on defaultProjectId matching.
+   * See issue #26.
+   */
+  private _providerTargetsTaskProject(
+    provider: IssueProvider,
+    taskProjectId: string | null | undefined,
+  ): boolean {
+    if (!taskProjectId) return false;
+    if (provider.defaultProjectId === taskProjectId) return true;
+    const mapping = (
+      provider as unknown as {
+        treeImportMapping?: Record<string, { spProjectId: string }>;
+      }
+    ).treeImportMapping;
+    if (mapping) {
+      return Object.values(mapping).some((e) => e.spProjectId === taskProjectId);
+    }
+    return false;
+  }
+
   private _hasAutoCreateEnabled(provider: IssueProvider): boolean {
     // Agenda-view providers (e.g. Google Calendar) should never auto-create issues
     if (this._pluginRegistry.getUseAgendaView(provider.issueProviderKey)) {
@@ -436,6 +485,15 @@ export class IssueTwoWaySyncEffects {
     if (provider.issueProviderKey === 'PLAINSPACE') {
       const ps = provider as { spaceId?: string | null; token?: string | null };
       return !!ps.spaceId && !!ps.token;
+    }
+    // GitLab (issue #26): opt-in via cfg.isAutoCreateIssues. Kept behind a
+    // flag because unlike Plainspace, GitLab-linked SP projects can pre-date
+    // this feature — silently switching on auto-issue-creation would surprise
+    // users who use SP as a lightweight overlay on top of GitLab, not as a
+    // source of new issues.
+    if (provider.issueProviderKey === 'GITLAB') {
+      const gitlab = provider as { token?: string | null; isAutoCreateIssues?: boolean };
+      return !!gitlab.token && !!gitlab.isAutoCreateIssues;
     }
     // Check for plugin providers (both plugin:* and migrated keys like GITHUB)
     const pluginCfg = (provider as { pluginConfig?: Record<string, unknown> })

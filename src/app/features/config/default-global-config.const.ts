@@ -137,6 +137,9 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     globalToggleTaskStart: null,
     globalAddNote: null,
     globalAddTask: null,
+    // Alfred/Raycast convention. Users can rebind or clear from the
+    // keyboard settings page. See electron/quick-add-window.ts.
+    globalQuickAdd: 'Ctrl+Shift+Space',
     globalToggleTaskWidget: null,
     addNewTask: 'Shift+A',
     addNewProject: 'Shift+P',

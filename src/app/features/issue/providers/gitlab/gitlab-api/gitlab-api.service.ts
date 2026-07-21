@@ -253,6 +253,60 @@ export class GitlabApiService {
   }
 
   /**
+   * POST /projects/:projectRef/issues — creates a new issue in the given
+   * GitLab project. `projectRef` may be a numeric ID or a URL-encoded
+   * namespace path (`group/subgroup/repo`). Returns the raw response so
+   * the caller can extract `references.full` (the `<path>#<iid>` id
+   * format SP uses everywhere) plus the numeric iid for the task-title
+   * prefix. Used by the two-way-sync auto-create effect (issue #26).
+   */
+  createIssue$(
+    projectRef: string,
+    body: { title: string; description?: string; due_date?: string },
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalIssue> {
+    const projectURL = projectRef.replace(/\//gi, '%2F');
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/projects/${projectURL}/issues`,
+        method: 'POST',
+        data: body,
+      },
+      cfg,
+    ).pipe(map((res) => (res as any).body as GitlabOriginalIssue));
+  }
+
+  /**
+   * PUT /projects/:projectRef/issues/:iid — updates existing issue fields.
+   * The `state_event` param is GitLab's peculiar close/reopen verb (it's
+   * NOT `state`); callers translate `isDone: true` → `state_event: 'close'`
+   * upstream. Any other body field (title, description, labels, due_date,
+   * assignee_ids, milestone_id, etc.) is passed through unchanged.
+   */
+  updateIssue$(
+    issueId: string,
+    body: {
+      state_event?: 'close' | 'reopen';
+      title?: string;
+      description?: string;
+      due_date?: string | null;
+      labels?: string;
+      assignee_ids?: number[];
+      milestone_id?: number | null;
+    },
+    cfg: GitlabCfg,
+  ): Observable<GitlabOriginalIssue> {
+    return this._sendRawRequest$(
+      {
+        url: this._issueApiLink(cfg, issueId),
+        method: 'PUT',
+        data: body,
+      },
+      cfg,
+    ).pipe(map((res) => (res as any).body as GitlabOriginalIssue));
+  }
+
+  /**
    * DELETE /projects/:project/issues/:iid/notes/:note_id — removes a
    * note. Same permission rules as edit: author or maintainer only.
    */

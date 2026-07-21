@@ -4,6 +4,7 @@ import { catchError, map, mergeMap, tap, toArray } from 'rxjs/operators';
 import { Task } from 'src/app/features/tasks/task.model';
 import { BaseIssueProviderService } from '../../base/base-issue-provider.service';
 import { IssueData, SearchResultItem } from '../../issue.model';
+import { IssueLog } from '../../../../core/log';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
 import { GitlabGraphqlApiService } from './gitlab-api/gitlab-graphql-api.service';
 import { GitlabCfg } from './gitlab.model';
@@ -288,8 +289,22 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     return firstValueFrom(
       from(tasks).pipe(
         mergeMap(async (task) => {
-          const refreshDataForTask = await this.getFreshDataForIssueTask(task);
-          return { task, refreshDataForTask };
+          // Isolate per-task failures: a single malformed issueId (e.g.
+          // legacy data where task.issueId lacks the `<path>#<iid>` shape)
+          // used to reject the whole mergeMap and poison the entire poll
+          // batch. Now we swallow, log, and skip so healthy tasks in the
+          // same batch still refresh.
+          try {
+            const refreshDataForTask = await this.getFreshDataForIssueTask(task);
+            return { task, refreshDataForTask };
+          } catch (err) {
+            IssueLog.err(
+              '[Gitlab] getFreshDataForIssueTask failed for task',
+              { taskId: task.id, issueId: task.issueId },
+              err,
+            );
+            return { task, refreshDataForTask: null };
+          }
         }, GitlabCommonInterfacesService._POLL_CONCURRENCY),
         toArray(),
         map((items) =>

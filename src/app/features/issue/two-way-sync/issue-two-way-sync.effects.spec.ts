@@ -1257,7 +1257,11 @@ describe('IssueTwoWaySyncEffects', () => {
 
       tick();
 
-      expect(createIssueSpy).toHaveBeenCalledWith('New Task', cfg);
+      expect(createIssueSpy).toHaveBeenCalledWith(
+        'New Task',
+        cfg,
+        jasmine.objectContaining({ projectId: 'project-1' }),
+      );
       expect(taskServiceSpy.update).toHaveBeenCalledWith(
         'task-new',
         jasmine.objectContaining({
@@ -1462,7 +1466,11 @@ describe('IssueTwoWaySyncEffects', () => {
 
       tick();
 
-      expect(createIssueSpy).toHaveBeenCalledWith('New Task', cfg);
+      expect(createIssueSpy).toHaveBeenCalledWith(
+        'New Task',
+        cfg,
+        jasmine.objectContaining({ projectId: 'project-1' }),
+      );
       expect(taskServiceSpy.update).toHaveBeenCalledWith(
         'task-new',
         jasmine.objectContaining({
