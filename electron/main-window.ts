@@ -545,6 +545,7 @@ function initWinEventListeners(app: Electron.App): void {
     if (!getIsTaskWidgetAlwaysShow() && !getIsTaskWidgetUserForcedVisible()) {
       hideTaskWidget();
     }
+    _restoreMacActivationPolicy();
   });
 
   mainWin.on('focus', () => {
@@ -556,6 +557,7 @@ function initWinEventListeners(app: Electron.App): void {
     ) {
       hideTaskWidget();
     }
+    _restoreMacActivationPolicy();
   });
 
   // Handle hide event to show task widget
@@ -717,6 +719,35 @@ const appMinimizeHandler = (app: App): void => {
         }
       }
     });
+  }
+};
+
+/**
+ * Bring the app back to "regular" activation policy on macOS.
+ *
+ * When SP is minimized to the tray or the main window is hidden and only
+ * utility windows remain (task widget, quick-add overlay, tray), macOS
+ * auto-demotes the app to `accessory` activation policy — that's what
+ * kills the dock icon AND removes the menu bar even when the main window
+ * is visible again. Electron doesn't automatically restore `regular`
+ * when the main window comes back with `.show()`, so the app stays in a
+ * zombie state: interactive but not dock-worthy.
+ *
+ * `setActivationPolicy('regular')` + `dock.show()` are cheap no-ops when
+ * the app is already regular, so it's safe to hammer on every show/focus
+ * of the main window.
+ */
+const _restoreMacActivationPolicy = (): void => {
+  if (!IS_MAC) return;
+  try {
+    app.setActivationPolicy?.('regular');
+  } catch {
+    /* macOS-only API; swallow if it disappears in a future Electron */
+  }
+  try {
+    app.dock?.show();
+  } catch {
+    /* macOS-only API; swallow */
   }
 };
 
