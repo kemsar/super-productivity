@@ -2,9 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <!--
+      `script-src 'self' 'unsafe-inline'` — `'self'` lets us pull the
+      shared parser out of `./shared-with-frontend/` as a plain `<script src>`,
+      `'unsafe-inline'` covers the overlay's own logic. Not swapping to
+      `type="module"` on purpose: Electron file:// origins block ES-module
+      imports on CORS, and a UMD-shaped parser (see quick-add-parser.js)
+      dodges the problem without a preload or bundler in the loop.
+    -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src http://127.0.0.1:3876"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'unsafe-inline'; connect-src http://127.0.0.1:3876"
     />
     <title>Quick Add</title>
     <style>
@@ -16,6 +24,7 @@
         --border: #333;
         --accent: #4f8dff;
         --error: #ff5252;
+        --warn: #ffb347;
       }
       html,
       body {
@@ -41,7 +50,11 @@
         letter-spacing: 0.06em;
         margin-bottom: 10px;
       }
-      #input {
+      /* Title line — a single-line textarea (rows=1) so Enter can carry the
+         "submit" semantic while Shift+Enter (or a downward-arrow keystroke)
+         drops into the description drawer. `resize:none` and a hard-coded
+         height keep the overlay's chrome stable. */
+      #title {
         width: 100%;
         border: none;
         outline: none;
@@ -51,9 +64,37 @@
         line-height: 1.3;
         padding: 6px 0;
         border-bottom: 1px solid var(--border);
+        resize: none;
+        font-family: inherit;
+        overflow: hidden;
+        height: 34px;
       }
-      #input:focus {
+      #title:focus {
         border-bottom-color: var(--accent);
+      }
+      /* Description drawer — hidden until the user pushes Enter-with-Shift
+         or the down-arrow / Tab. Grows organically; capped at ~5 lines then
+         scrolls. Muted styling keeps it visually secondary to the title. */
+      #description {
+        width: 100%;
+        border: none;
+        outline: none;
+        background: transparent;
+        color: var(--fg-muted);
+        font-size: 14px;
+        line-height: 1.4;
+        padding: 8px 0 0;
+        resize: none;
+        font-family: inherit;
+        min-height: 24px;
+        max-height: 110px;
+      }
+      #description.hidden {
+        display: none;
+      }
+      #description::placeholder {
+        color: var(--fg-muted);
+        opacity: 0.6;
       }
       #status {
         margin-top: 12px;
@@ -67,26 +108,39 @@
       #status.saving {
         color: var(--accent);
       }
-      /* Live-parsed target project — shows once a valid !name token is in
-         the input so the user knows where the task will land before hitting
-         Enter. Muted-then-accent to feel Todoist/Alfred-familiar. */
+      /* Live-parsed preview — a strip of chips populated by the parser.
+         Each chip labels the token kind and shows the resolved value (or an
+         unresolved warning). The whole strip hides when there's nothing to
+         show, so a plain "walk the dog" title has zero decoration. */
       .parse-preview {
         margin-top: 8px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
         font-size: 12px;
-        color: var(--fg-muted);
+        min-height: 22px;
       }
       .parse-preview .chip {
-        display: inline-block;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
         background: rgba(79, 141, 255, 0.15);
         color: var(--accent);
         border-radius: 3px;
         padding: 2px 8px;
-        margin-left: 4px;
         font-family: ui-monospace, SFMono-Regular, monospace;
         font-size: 11px;
+        line-height: 1.4;
       }
-      .parse-preview.unresolved .chip {
-        background: rgba(255, 82, 82, 0.12);
+      .parse-preview .chip .k {
+        color: var(--fg-muted);
+      }
+      .parse-preview .chip.warn {
+        background: rgba(255, 179, 71, 0.15);
+        color: var(--warn);
+      }
+      .parse-preview .chip.error {
+        background: rgba(255, 82, 82, 0.15);
         color: var(--error);
       }
       .keys {
@@ -95,6 +149,7 @@
         gap: 16px;
         font-size: 11px;
         color: var(--fg-muted);
+        flex-wrap: wrap;
       }
       kbd {
         background: #2a2a2a;
@@ -110,36 +165,67 @@
   <body>
     <div class="wrap">
       <div class="hint">Quick add task</div>
-      <input
-        id="input"
-        type="text"
+      <textarea
+        id="title"
+        rows="1"
         autofocus
-        placeholder="What's on your mind? (use !project to target)"
+        placeholder="What's on your mind? Try: Fix login bug !EIP @kevin ##v2 ~fri !!high >doing"
         autocomplete="off"
         spellcheck="false"
-      />
+        aria-label="Task title with optional !project @user ##milestone ~date !!priority >status tokens"
+      ></textarea>
+      <textarea
+        id="description"
+        class="hidden"
+        rows="1"
+        placeholder="Description (optional)"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Task description"
+      ></textarea>
       <div
         id="parse-preview"
         class="parse-preview"
-        hidden
       ></div>
       <div id="status"></div>
       <div class="keys">
         <span><kbd>Enter</kbd>save</span>
-        <span><kbd>!project</kbd>target</span>
+        <span><kbd>Shift+Enter</kbd>description</span>
+        <span
+          ><kbd>!prj</kbd> <kbd>@who</kbd> <kbd>##ms</kbd> <kbd>~date</kbd>
+          <kbd>!!pri</kbd> <kbd>&gt;stat</kbd></span
+        >
         <span><kbd>Esc</kbd>cancel</span>
       </div>
     </div>
+    <!--
+      Load the shared parser via plain <script src>. See the CSP comment
+      above for why we're NOT using type="module" here. `SPQuickAddParser`
+      lands as a global containing `parseQuickAddText` / `resolveDateToken`.
+    -->
+    <script src="./shared-with-frontend/quick-add-parser.js"></script>
     <script>
       // Self-contained overlay logic. Talks to SP via the local REST API on
-      // 127.0.0.1:3876 (GET /projects, POST /tasks). See
-      // electron/quick-add-window.ts for the enclosing BrowserWindow
-      // lifecycle and issue #25 for the plan.
+      // 127.0.0.1:3876 (GET /projects, POST /tasks). Grammar/parsing lives
+      // in shared-with-frontend/quick-add-parser.js so the Angular effect
+      // can re-parse from the same source (issue #19).
       (function () {
         const REST = 'http://127.0.0.1:3876';
-        const input = document.getElementById('input');
+        const titleEl = document.getElementById('title');
+        const descEl = document.getElementById('description');
         const status = document.getElementById('status');
-        const parsePreview = document.getElementById('parse-preview');
+        const preview = document.getElementById('parse-preview');
+        const parseText = window.SPQuickAddParser
+          ? window.SPQuickAddParser.parseQuickAddText
+          : null;
+
+        if (!parseText) {
+          // Parser failed to load — the overlay is unusable. Fail loud so
+          // devtools shows the reason rather than pretending to work with a
+          // degraded (project-marker-only) grammar the user won't notice.
+          status.textContent = 'Parser failed to load — check devtools.';
+          status.className = 'error';
+        }
 
         // Projects, loaded once on open. Small enough to cache in memory;
         // token/title comparisons stay case-insensitive so `!odin-pipes`
@@ -151,20 +237,12 @@
             const res = await fetch(REST + '/projects');
             if (!res.ok) return;
             const body = await res.json();
-            // Local REST API wraps successful GETs in `{ ok: true, data: [...] }`
-            // for some endpoints and returns raw arrays for others; handle both.
             projects = Array.isArray(body) ? body : body.data || [];
           } catch (err) {
-            // Non-fatal — the overlay still works without project targeting.
-            // Console-log so devtools shows a signal if a user files a bug.
             console.warn('[quick-add] failed to load projects', err);
           }
         }
 
-        // Titles collapse whitespace/punctuation so `ODIN Pipes` matches
-        // `!odin-pipes`, `!odinpipes`, `!Odin_Pipes`. Aggressive but
-        // effective; a token can still fail to resolve, and the preview
-        // makes that obvious before submit.
         function normalize(s) {
           return String(s || '')
             .toLowerCase()
@@ -175,61 +253,10 @@
           if (!token) return null;
           const needle = normalize(token);
           if (!needle) return null;
-          // Prefer exact (normalized) title match; fall back to prefix so
-          // `!odin` picks up the first "ODIN …" project deterministically.
           const exact = projects.find((p) => normalize(p.title) === needle);
           if (exact) return exact;
           const prefix = projects.find((p) => normalize(p.title).startsWith(needle));
           return prefix || null;
-        }
-
-        // Extract the LAST `!token` from the input (Todoist convention).
-        // Returns { cleanTitle, token } — token is null if no marker.
-        // Done via string ops rather than a regex to avoid the lazy-quantifier
-        // backtracking eslint calls out on the lookalike pattern.
-        function parseInput(raw) {
-          const trimmed = raw.trim();
-          if (!trimmed) return { cleanTitle: '', token: null };
-          const bangIdx = trimmed.lastIndexOf('!');
-          // Marker must be either at start OR preceded by whitespace, else
-          // it's part of the title (e.g. "fix !!important" shouldn't parse).
-          if (
-            bangIdx === -1 ||
-            (bangIdx > 0 && !/\s/.test(trimmed.charAt(bangIdx - 1)))
-          ) {
-            return { cleanTitle: trimmed, token: null };
-          }
-          const rest = trimmed.slice(bangIdx + 1).trim();
-          // Token cannot contain whitespace or another `!` — those signals
-          // mean it's not a well-formed target marker.
-          if (!rest || /\s|!/.test(rest)) {
-            return { cleanTitle: trimmed, token: null };
-          }
-          return {
-            cleanTitle: trimmed.slice(0, bangIdx).trim(),
-            token: rest,
-          };
-        }
-
-        function updatePreview() {
-          const { token } = parseInput(input.value);
-          if (!token) {
-            parsePreview.hidden = true;
-            parsePreview.classList.remove('unresolved');
-            parsePreview.innerHTML = '';
-            return;
-          }
-          const project = resolveProject(token);
-          parsePreview.hidden = false;
-          if (project) {
-            parsePreview.classList.remove('unresolved');
-            parsePreview.innerHTML =
-              'Target: <span class="chip">' + escapeHtml(project.title) + '</span>';
-          } else {
-            parsePreview.classList.add('unresolved');
-            parsePreview.innerHTML =
-              'No project matches <span class="chip">!' + escapeHtml(token) + '</span>';
-          }
         }
 
         function escapeHtml(s) {
@@ -249,27 +276,101 @@
           });
         }
 
+        function chip(kind, value, cls) {
+          const c = document.createElement('span');
+          c.className = 'chip' + (cls ? ' ' + cls : '');
+          c.innerHTML =
+            '<span class="k">' + escapeHtml(kind) + '</span>' + escapeHtml(value);
+          return c;
+        }
+
+        // Build the raw input the parser expects. Line 1 is the title
+        // textarea's content; line 2+ is the description drawer if it has
+        // any text. Keeping the textareas separate on-screen but joining
+        // them at parse time lets the parser stay a single-string function.
+        function currentRaw() {
+          const t = titleEl.value;
+          const d = descEl.value;
+          return d.length ? t + '\n' + d : t;
+        }
+
+        function updatePreview() {
+          if (!parseText) return;
+          preview.innerHTML = '';
+          const parsed = parseText(currentRaw());
+
+          if (parsed.projectMarker) {
+            const project = resolveProject(parsed.projectMarker);
+            if (project) {
+              preview.appendChild(chip('project', project.title));
+            } else {
+              preview.appendChild(
+                chip('project', '!' + parsed.projectMarker + ' (no match)', 'error'),
+              );
+            }
+          }
+          for (const a of parsed.assignees) {
+            preview.appendChild(chip('assign', '@' + a));
+          }
+          if (parsed.milestone) {
+            preview.appendChild(chip('milestone', parsed.milestone));
+          }
+          if (parsed.dueDate) {
+            preview.appendChild(chip('due', parsed.dueDate));
+          } else if (parsed.dueDateRaw) {
+            preview.appendChild(chip('due', '~' + parsed.dueDateRaw + ' (?)', 'warn'));
+          }
+          if (parsed.priority) {
+            preview.appendChild(chip('priority', parsed.priority));
+          } else if (parsed.priorityRaw) {
+            preview.appendChild(
+              chip('priority', '!!' + parsed.priorityRaw + ' (?)', 'warn'),
+            );
+          }
+          if (parsed.status) {
+            preview.appendChild(chip('status', parsed.status));
+          }
+          if (parsed.description) {
+            const len = parsed.description.length;
+            preview.appendChild(chip('desc', len + (len === 1 ? ' char' : ' chars')));
+          }
+        }
+
         function setStatus(text, cls) {
           status.textContent = text;
           status.className = cls || '';
         }
 
+        function showDescription() {
+          descEl.classList.remove('hidden');
+        }
+
         async function submit() {
-          const raw = input.value.trim();
-          if (!raw) return;
-          const { cleanTitle, token } = parseInput(raw);
-          if (!cleanTitle) return;
-          const project = token ? resolveProject(token) : null;
+          if (!parseText) return;
+          const parsed = parseText(currentRaw());
+          if (!parsed.title) return;
           // If the user typed a `!token` that didn't resolve, fail loud
-          // rather than silently dropping the marker and posting to
-          // Inbox — that would be a Todoist paper-cut all over again.
-          if (token && !project) {
-            setStatus('No project matches "!' + token + '"', 'error');
-            return;
+          // rather than silently dropping the marker and posting to Inbox.
+          let projectId;
+          if (parsed.projectMarker) {
+            const project = resolveProject(parsed.projectMarker);
+            if (!project) {
+              setStatus('No project matches "!' + parsed.projectMarker + '"', 'error');
+              return;
+            }
+            projectId = project.id;
           }
           setStatus('Saving…', 'saving');
-          const body = { title: cleanTitle };
-          if (project) body.projectId = project.id;
+          const body = { title: parsed.title };
+          if (projectId) body.projectId = projectId;
+          // Stash the raw parse on the request so the Angular side can
+          // reuse extras (assignees, milestone, date, priority, status,
+          // description) without re-parsing. This is a hint the local REST
+          // API is free to ignore — the effect re-parses `task.title`
+          // as its authoritative source (see #19 rationale).
+          if (parsed.rawTitle) {
+            body._quickAddRaw = currentRaw();
+          }
           try {
             const res = await fetch(REST + '/tasks', {
               method: 'POST',
@@ -281,7 +382,9 @@
               setStatus('Save failed (' + res.status + '): ' + errBody, 'error');
               return;
             }
-            input.value = '';
+            titleEl.value = '';
+            descEl.value = '';
+            descEl.classList.add('hidden');
             updatePreview();
             setStatus('Saved.', '');
             setTimeout(() => {
@@ -292,8 +395,12 @@
           }
         }
 
-        input.addEventListener('input', updatePreview);
-        input.addEventListener('keydown', (ev) => {
+        // Title input handlers: keep the field single-line by intercepting
+        // Enter. Shift+Enter and ArrowDown both open the description drawer
+        // and move focus — either gesture feels natural (Shift+Enter matches
+        // Slack/Discord/GitHub; ArrowDown matches Alfred/Raycast panel nav).
+        titleEl.addEventListener('input', updatePreview);
+        titleEl.addEventListener('keydown', (ev) => {
           if (ev.key === 'Escape') {
             ev.preventDefault();
             window.close();
@@ -301,12 +408,49 @@
           }
           if (ev.key === 'Enter' && !ev.isComposing) {
             ev.preventDefault();
+            if (ev.shiftKey) {
+              showDescription();
+              descEl.focus();
+              return;
+            }
             submit();
+          } else if (ev.key === 'ArrowDown' && !ev.shiftKey && !ev.metaKey) {
+            ev.preventDefault();
+            showDescription();
+            descEl.focus();
           }
         });
 
-        window.addEventListener('focus', () => input.focus());
-        input.focus();
+        descEl.addEventListener('input', updatePreview);
+        descEl.addEventListener('keydown', (ev) => {
+          if (ev.key === 'Escape') {
+            ev.preventDefault();
+            window.close();
+            return;
+          }
+          // Cmd/Ctrl+Enter submits from the description drawer — plain Enter
+          // in a textarea should insert a newline (matches every other multi-
+          // line input in the app; Slack/Discord follow the same convention).
+          if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey) && !ev.isComposing) {
+            ev.preventDefault();
+            submit();
+          } else if (
+            ev.key === 'ArrowUp' &&
+            !ev.shiftKey &&
+            !ev.metaKey &&
+            descEl.selectionStart === 0
+          ) {
+            // At the top of the description, ArrowUp jumps focus back to
+            // the title. Cursor at start ensures we only steal focus when
+            // the user is trying to leave the drawer, not when they're
+            // editing within it.
+            ev.preventDefault();
+            titleEl.focus();
+          }
+        });
+
+        window.addEventListener('focus', () => titleEl.focus());
+        titleEl.focus();
         loadProjects();
       })();
     </script>

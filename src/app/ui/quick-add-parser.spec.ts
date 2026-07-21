@@ -1,7 +1,12 @@
+// The parser is authored as a UMD-shaped `.js` (see file header for why —
+// the overlay HTML has to load it as a plain `<script src>` and file:// CORS
+// blocks `type="module"`). TypeScript resolves the extensionless import to
+// the plain-JS file and `esModuleInterop` turns the CJS export into a
+// namespace, so a destructured import here is fine.
 import {
   parseQuickAddText,
   resolveDateToken,
-} from '../../../electron/shared-with-frontend/quick-add-parser.mjs';
+} from '../../../electron/shared-with-frontend/quick-add-parser';
 
 // Fixed reference date across the suite so weekday-name resolution and
 // today/tomorrow are deterministic. 2026-07-15 is a Wednesday.

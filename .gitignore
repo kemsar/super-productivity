@@ -81,6 +81,11 @@ build/hub
 build/generated-release-notes/
 electron/**/*.js
 !electron/scripts/bundle-preload.js
+# Author-source (UMD): not a tsc-emitted artifact. Overlay HTML loads it via
+# plain <script src> in a file:// context, which rules out ES-module syntax
+# and therefore rules out a `.ts` source + tsc emit chain (see the parser
+# file header for the full trade-off).
+!electron/shared-with-frontend/quick-add-parser.js
 electron/**/*.js.map
 electron/bin/wayland-idle-helper
 electron/wayland-idle-helper/target/

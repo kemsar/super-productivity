@@ -32,8 +32,13 @@ import { assertSecureWebPreferences } from './web-preferences-guard';
 
 let quickAddWin: BrowserWindow | null = null;
 
-const OVERLAY_WIDTH = 620;
-const OVERLAY_HEIGHT = 220;
+const OVERLAY_WIDTH = 640;
+// Fixed height picked to comfortably fit: hint + title textarea +
+// description drawer (revealed on demand) + one row of preview chips +
+// key-hints strip. Set high enough that the description doesn't scroll
+// on the first few lines of typical input; the drawer itself caps at
+// ~5 lines and scrolls beyond that, so the window stays anchored.
+const OVERLAY_HEIGHT = 340;
 
 /**
  * Positions the overlay near the top-center of the display containing the
