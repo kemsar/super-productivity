@@ -105,6 +105,19 @@ describe('GitlabSyncAdapterService', () => {
       expect(result.issueNumber).toBe(99);
     });
 
+    it('throws when the response omits both references.full and iid (would produce a malformed id)', async () => {
+      apiSpy.createIssue$.and.returnValue(asIssue$({ title: 'nope' }));
+      await expectAsync(
+        service.createIssue(
+          'No id at all',
+          makeCfg({ sourceMode: 'project', project: 'group/legacy' }),
+        ),
+      ).toBeRejectedWithError(/missing both references\.full and iid/i);
+      // Sanity: we DID hit the API — the throw is post-response, not a
+      // short-circuit before the POST.
+      expect(apiSpy.createIssue$).toHaveBeenCalledTimes(1);
+    });
+
     it('throws when group mode has no matching mapping entry', async () => {
       await expectAsync(
         service.createIssue(

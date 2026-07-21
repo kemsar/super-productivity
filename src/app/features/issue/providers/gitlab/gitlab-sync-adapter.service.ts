@@ -107,10 +107,21 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     // sometimes do on POST responses).
     const references = (issueRaw['references'] ?? {}) as Record<string, unknown>;
     const fullRef =
-      typeof references['full'] === 'string' ? (references['full'] as string) : null;
+      typeof references['full'] === 'string' && references['full']
+        ? (references['full'] as string)
+        : null;
     const iid =
       typeof issueRaw['iid'] === 'number' ? (issueRaw['iid'] as number) : undefined;
-    const issueId = fullRef ?? `${targetProjectPath}#${iid ?? ''}`;
+    // Never stamp `path#` (empty iid) into the store — downstream
+    // `getPartsFromGitlabIssueId` throws on it and every subsequent poll,
+    // push, or link click for the task fails. Fail loud right here so the
+    // caller either fixes the response shape or surfaces a real error.
+    if (!fullRef && iid === undefined) {
+      throw new Error(
+        `GitLab createIssue: response missing both references.full and iid — cannot form a canonical issueId (target=${targetProjectPath}).`,
+      );
+    }
+    const issueId = fullRef ?? `${targetProjectPath}#${iid}`;
     return {
       issueId,
       issueNumber: iid,
@@ -119,8 +130,23 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   }
 
   async fetchIssue(issueId: string, cfg: GitlabCfg): Promise<Record<string, unknown>> {
-    const issue = await firstValueFrom(this._api.getById$(issueId, cfg));
-    return (issue ?? {}) as unknown as Record<string, unknown>;
+    // Guard against malformed issueIds — SP tasks sometimes carry a
+    // legacy or partially-migrated value (empty projectIssueId, missing
+    // separator, etc.) that `getPartsFromGitlabIssueId` rejects. Before
+    // #26 there was no push-side traffic so these tasks were silent;
+    // now every `updateTask` on them would spam a stack trace. Return
+    // an empty issue instead — `_pushChanges$` treats a no-baseline
+    // result as "skip, don't crash the effect chain".
+    try {
+      const issue = await firstValueFrom(this._api.getById$(issueId, cfg));
+      return (issue ?? {}) as unknown as Record<string, unknown>;
+    } catch (err) {
+      IssueLog.warn('[GitlabSyncAdapter] fetchIssue skipped for malformed issueId', {
+        issueId,
+        err,
+      });
+      return {};
+    }
   }
 
   async pushChanges(

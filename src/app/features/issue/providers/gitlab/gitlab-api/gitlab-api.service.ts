@@ -273,7 +273,7 @@ export class GitlabApiService {
         data: body,
       },
       cfg,
-    ) as unknown as Observable<GitlabOriginalIssue>;
+    ).pipe(map((res) => (res as any).body as GitlabOriginalIssue));
   }
 
   /**
@@ -303,7 +303,7 @@ export class GitlabApiService {
         data: body,
       },
       cfg,
-    ) as unknown as Observable<GitlabOriginalIssue>;
+    ).pipe(map((res) => (res as any).body as GitlabOriginalIssue));
   }
 
   /**
