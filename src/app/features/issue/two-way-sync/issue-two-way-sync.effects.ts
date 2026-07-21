@@ -33,6 +33,8 @@ import { deleteTag, deleteTags } from '../../tag/store/tag.actions';
 import { IssueSyncAdapterResolverService } from './issue-sync-adapter-resolver.service';
 import { PluginIssueProviderRegistryService } from '../../../plugins/issue-provider/plugin-issue-provider-registry.service';
 import { RecentIssueCreationsService } from './recent-issue-creations.service';
+import { QuickAddExtras } from './issue-sync-adapter.interface';
+import { parseQuickAddText } from '../../../../../electron/shared-with-frontend/quick-add-parser';
 
 const SYNCABLE_TASK_FIELDS: ReadonlySet<string> = new Set([
   'isDone',
@@ -320,13 +322,33 @@ export class IssueTwoWaySyncEffects {
               if (!adapter?.createIssue) {
                 return EMPTY;
               }
+              // Parse quick-add tokens off task.title so the same grammar
+              // works for BOTH the overlay and the in-app quick-add bar.
+              // The clean title is what we hand to the adapter (GitLab
+              // issue title / task retro-link); the extras get merged into
+              // the adapter's initial POST when it supports them. Existing
+              // task.notes wins over parsed description — the overlay sets
+              // notes explicitly, so if that field is present a re-parse
+              // would double the content up (#19).
+              const parsed = parseQuickAddText(task.title);
+              const cleanTitle = parsed.title || task.title;
+              const extras: QuickAddExtras = {
+                assignees: parsed.assignees.length ? parsed.assignees : undefined,
+                milestone: parsed.milestone,
+                dueDate: parsed.dueDate,
+                priority: parsed.priority,
+                status: parsed.status,
+                description: task.notes?.trim() || parsed.description,
+                unresolved: parsed.unresolved.length ? parsed.unresolved : undefined,
+              };
               return this._issueProviderService
                 .getCfgOnce$(provider.id, provider.issueProviderKey)
                 .pipe(
                   concatMap((cfg) =>
                     from(
-                      adapter.createIssue!(task.title, cfg, {
+                      adapter.createIssue!(cleanTitle, cfg, {
                         projectId: task.projectId,
+                        extras,
                       }),
                     ).pipe(
                       concatMap(async ({ issueId, issueNumber, issueData }) => {
@@ -342,6 +364,14 @@ export class IssueTwoWaySyncEffects {
                           const titlePrefix =
                             issueNumber != null ? `#${issueNumber} ` : '';
                           const syncValues = adapter.extractSyncValues(issueData);
+                          // Retro-link uses the PARSED clean title, not
+                          // the raw one — otherwise the tokens (`!EIP`,
+                          // `@kevin`, `~fri`, ...) would linger on the SP
+                          // task title forever. Also propagate the parsed
+                          // dueDate to task.dueDay so ~fri sets a real
+                          // due date on the SP side; notes are set on
+                          // add via the local REST API and left alone here.
+                          const shouldSetDueDay = parsed.dueDate && !task.dueDay;
                           this._taskService.update(task.id, {
                             issueId,
                             issueType: provider.issueProviderKey,
@@ -349,9 +379,8 @@ export class IssueTwoWaySyncEffects {
                             issueLastUpdated: Date.now(),
                             issueWasUpdated: false,
                             issueLastSyncedValues: syncValues,
-                            title: titlePrefix
-                              ? `${titlePrefix}${task.title}`
-                              : task.title,
+                            title: `${titlePrefix}${cleanTitle}`,
+                            ...(shouldSetDueDay ? { dueDay: parsed.dueDate } : {}),
                           });
 
                           // Push initial task values (e.g. dueWithTime from short syntax)

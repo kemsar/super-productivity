@@ -1,5 +1,27 @@
 import { FieldMapping, FieldSyncConfig } from './issue-sync.model';
 
+/**
+ * Structured metadata extracted from a quick-add task title by the shared
+ * parser (electron/shared-with-frontend/quick-add-parser.js, issue #19).
+ *
+ * Passed into `IssueSyncAdapter.createIssue` under `taskContext.extras` so
+ * adapters can populate the initial POST with description / assignees /
+ * milestone / due-date / priority / status without re-parsing the title
+ * on their own. Every field is optional — adapters ignore what they can't
+ * honor. Non-parseable tokens land in `unresolved` so a downstream UI (or
+ * a warning notification) can surface them without the adapter having to
+ * re-inspect the title string.
+ */
+export interface QuickAddExtras {
+  description?: string;
+  assignees?: string[];
+  milestone?: string;
+  dueDate?: string;
+  priority?: 'low' | 'medium' | 'high' | 'urgent';
+  status?: string;
+  unresolved?: string[];
+}
+
 export interface IssueSyncAdapter<TCfg> {
   getFieldMappings(): FieldMapping[];
   getSyncConfig(cfg: TCfg): FieldSyncConfig;
@@ -26,6 +48,14 @@ export interface IssueSyncAdapter<TCfg> {
     cfg: TCfg,
     taskContext?: {
       projectId?: string | null;
+      /**
+       * Optional parsed extras from the quick-add overlay's natural-language
+       * grammar (#19). Adapters may consume as much of this as they can
+       * honor — anything left over is discarded silently. The auto-create
+       * effect never rejects a task because the adapter can't fulfil an
+       * extra; the task lands, minus whatever the adapter dropped.
+       */
+      extras?: QuickAddExtras;
     },
   ): Promise<{
     issueId: string;

@@ -361,16 +361,17 @@
             projectId = project.id;
           }
           setStatus('Saving…', 'saving');
-          const body = { title: parsed.title };
+          // Send the RAW title (tokens included) so the auto-create effect
+          // can re-parse it as the single source of truth for BOTH overlay
+          // and in-app quick-add entries. `notes` carries the description
+          // directly — SP's task-notes field is exactly the concept the
+          // overlay's description drawer captures. The SP task briefly
+          // shows the raw tokens between add-task and retro-link (~1s),
+          // then the retro-link replaces the title with `#N <clean>` and
+          // sets task.dueDay from the ~date token (issue #19).
+          const body = { title: parsed.rawTitle };
           if (projectId) body.projectId = projectId;
-          // Stash the raw parse on the request so the Angular side can
-          // reuse extras (assignees, milestone, date, priority, status,
-          // description) without re-parsing. This is a hint the local REST
-          // API is free to ignore — the effect re-parses `task.title`
-          // as its authoritative source (see #19 rationale).
-          if (parsed.rawTitle) {
-            body._quickAddRaw = currentRaw();
-          }
+          if (parsed.description) body.notes = parsed.description;
           try {
             const res = await fetch(REST + '/tasks', {
               method: 'POST',
