@@ -3,7 +3,10 @@ import { firstValueFrom } from 'rxjs';
 
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
 import { GitlabCfg } from './gitlab.model';
-import { IssueSyncAdapter } from '../../two-way-sync/issue-sync-adapter.interface';
+import {
+  IssueSyncAdapter,
+  QuickAddExtras,
+} from '../../two-way-sync/issue-sync-adapter.interface';
 import { FieldMapping, FieldSyncConfig } from '../../two-way-sync/issue-sync.model';
 import { IssueLog } from '../../../../core/log';
 
@@ -81,7 +84,7 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   async createIssue(
     title: string,
     cfg: GitlabCfg,
-    taskContext?: { projectId?: string | null },
+    taskContext?: { projectId?: string | null; extras?: QuickAddExtras },
   ): Promise<{
     issueId: string;
     issueNumber?: number;
@@ -96,9 +99,21 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     IssueLog.log('[GitlabSyncAdapter] createIssue', {
       title,
       targetProjectPath,
+      hasExtras: !!taskContext?.extras,
     });
+    // Resolve quick-add extras BEFORE the POST so the initial issue lands
+    // with everything set — description, assignees, milestone, due date,
+    // priority label — in one round-trip. Any resolution that fails
+    // silently drops the field (assignee not found, milestone POST 403);
+    // the task still lands and the user can fix up on GitLab. See #19.
+    const body = await this._buildCreateBody(
+      title,
+      targetProjectPath,
+      cfg,
+      taskContext?.extras,
+    );
     const issue = await firstValueFrom(
-      this._api.createIssue$(targetProjectPath, { title }, cfg),
+      this._api.createIssue$(targetProjectPath, body, cfg),
     );
     const issueRaw = issue as unknown as Record<string, unknown>;
     // `references.full` is the canonical `<path>#<iid>` format SP already
@@ -209,5 +224,139 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
       }
     }
     return null;
+  }
+
+  /**
+   * Builds the POST body for `createIssue$` — merges the base title with
+   * any resolvable quick-add extras (#19). Each extra is fetched
+   * concurrently (assignees, milestone) and any that fails to resolve is
+   * silently dropped so the task still lands. Resolution failures are
+   * logged for the user's benefit — no snackbar because auto-create is
+   * a background flow and a stack of "@sarsen not found" toasts would be
+   * noisier than helpful.
+   */
+  private async _buildCreateBody(
+    title: string,
+    targetProjectPath: string,
+    cfg: GitlabCfg,
+    extras: QuickAddExtras | undefined,
+  ): Promise<{
+    title: string;
+    description?: string;
+    due_date?: string;
+    labels?: string;
+    assignee_ids?: number[];
+    milestone_id?: number;
+  }> {
+    const body: {
+      title: string;
+      description?: string;
+      due_date?: string;
+      labels?: string;
+      assignee_ids?: number[];
+      milestone_id?: number;
+    } = { title };
+    if (!extras) {
+      return body;
+    }
+    if (extras.description) {
+      body.description = extras.description;
+    }
+    if (extras.dueDate) {
+      body.due_date = extras.dueDate;
+    }
+    if (extras.priority) {
+      // GitLab has no first-class priority field. The scoped-label
+      // convention `priority::<value>` is the community standard (and the
+      // one #7 tracks for bidirectional mapping). Multiple labels would
+      // be comma-joined; only priority for now.
+      body.labels = `priority::${extras.priority}`;
+    }
+
+    // Resolve @assignees and ##milestone concurrently — both are optional
+    // and independent, so no need to serialize.
+    const [assigneeIds, milestoneId] = await Promise.all([
+      this._resolveAssignees(extras.assignees, cfg),
+      this._resolveMilestone(extras.milestone, targetProjectPath, cfg),
+    ]);
+    if (assigneeIds.length) {
+      body.assignee_ids = assigneeIds;
+    }
+    if (milestoneId != null) {
+      body.milestone_id = milestoneId;
+    }
+    return body;
+  }
+
+  /**
+   * Resolves a list of `@username` tokens to GitLab user ids. Each lookup
+   * is a separate REST call (GitLab's /users endpoint accepts one
+   * username at a time); we run them concurrently and drop any that
+   * don't resolve. Empty input or all-drops returns [].
+   */
+  private async _resolveAssignees(
+    usernames: string[] | undefined,
+    cfg: GitlabCfg,
+  ): Promise<number[]> {
+    if (!usernames || usernames.length === 0) return [];
+    const results = await Promise.all(
+      usernames.map(async (username) => {
+        try {
+          const user = await firstValueFrom(
+            this._api.searchUserByUsername$(username, cfg),
+          );
+          if (!user) {
+            IssueLog.warn(
+              `[GitlabSyncAdapter] assignee @${username} did not resolve to a GitLab user — dropping.`,
+            );
+            return null;
+          }
+          return user.id;
+        } catch (err) {
+          IssueLog.warn(
+            `[GitlabSyncAdapter] assignee lookup failed for @${username}`,
+            err,
+          );
+          return null;
+        }
+      }),
+    );
+    return results.filter((id): id is number => id != null);
+  }
+
+  /**
+   * Resolves a `##milestone` token to a GitLab milestone id in the target
+   * project, creating one if it doesn't already exist. A creation failure
+   * (403 in most cases — the token owner lacks maintainer rights on the
+   * project) drops the milestone silently rather than aborting the whole
+   * issue create — the user can attach one on GitLab after the fact.
+   */
+  private async _resolveMilestone(
+    title: string | undefined,
+    targetProjectPath: string,
+    cfg: GitlabCfg,
+  ): Promise<number | null> {
+    if (!title) return null;
+    try {
+      const existing = await firstValueFrom(
+        this._api.findMilestoneByTitle$(targetProjectPath, title, cfg),
+      );
+      if (existing) return existing.id;
+    } catch (err) {
+      IssueLog.warn(`[GitlabSyncAdapter] milestone lookup failed for ##${title}`, err);
+      return null;
+    }
+    try {
+      const created = await firstValueFrom(
+        this._api.createMilestone$(targetProjectPath, title, cfg),
+      );
+      return created.id;
+    } catch (err) {
+      IssueLog.warn(
+        `[GitlabSyncAdapter] milestone create failed for ##${title} — dropping.`,
+        err,
+      );
+      return null;
+    }
   }
 }

@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { Observable, of } from 'rxjs';
+import { Observable, of, throwError } from 'rxjs';
 
 import { GitlabSyncAdapterService } from './gitlab-sync-adapter.service';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
@@ -28,8 +28,16 @@ describe('GitlabSyncAdapterService', () => {
       'createIssue$',
       'updateIssue$',
       'getById$',
+      'searchUserByUsername$',
+      'findMilestoneByTitle$',
+      'createMilestone$',
     ]);
     apiSpy.updateIssue$.and.returnValue(asIssue$({ state: 'closed' }));
+    // Sensible default for lookup helpers so tests that don't care about
+    // extras don't need to set them explicitly.
+    apiSpy.searchUserByUsername$.and.returnValue(of(null));
+    apiSpy.findMilestoneByTitle$.and.returnValue(of(null));
+    apiSpy.createMilestone$.and.returnValue(of({ id: 999, iid: 1, title: 'stub' }));
 
     TestBed.configureTestingModule({
       providers: [
@@ -144,6 +152,125 @@ describe('GitlabSyncAdapterService', () => {
         ),
       ).toBeRejectedWithError(/no target project/i);
       expect(apiSpy.createIssue$).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('createIssue with QuickAddExtras (#19)', () => {
+    const baseCfg = (): GitlabCfg =>
+      makeCfg({ sourceMode: 'project', project: 'mygroup/repo' });
+    const stubIssueResponse = (): void => {
+      apiSpy.createIssue$.and.returnValue(
+        asIssue$({ iid: 100, references: { full: 'mygroup/repo#100' } }),
+      );
+    };
+
+    it('passes description, due_date, and priority label straight through', async () => {
+      stubIssueResponse();
+      await service.createIssue('Fix bug', baseCfg(), {
+        extras: {
+          description: 'Repros on Safari 17.',
+          dueDate: '2026-07-24',
+          priority: 'high',
+        },
+      });
+      expect(apiSpy.createIssue$).toHaveBeenCalledWith(
+        'mygroup/repo',
+        {
+          title: 'Fix bug',
+          description: 'Repros on Safari 17.',
+          due_date: '2026-07-24',
+          labels: 'priority::high',
+        },
+        jasmine.any(Object),
+      );
+    });
+
+    it('resolves an @username to its numeric id via /users?username=', async () => {
+      stubIssueResponse();
+      apiSpy.searchUserByUsername$.and.returnValue(of({ id: 42, username: 'kevin' }));
+      await service.createIssue('Ping', baseCfg(), {
+        extras: { assignees: ['kevin'] },
+      });
+      expect(apiSpy.searchUserByUsername$).toHaveBeenCalledWith(
+        'kevin',
+        jasmine.any(Object),
+      );
+      expect(apiSpy.createIssue$).toHaveBeenCalledWith(
+        'mygroup/repo',
+        { title: 'Ping', assignee_ids: [42] },
+        jasmine.any(Object),
+      );
+    });
+
+    it('drops an unresolvable assignee silently — the issue still lands', async () => {
+      stubIssueResponse();
+      apiSpy.searchUserByUsername$.and.returnValues(
+        of({ id: 42, username: 'kevin' }),
+        of(null),
+      );
+      await service.createIssue('Ping', baseCfg(), {
+        extras: { assignees: ['kevin', 'ghost'] },
+      });
+      const posted = apiSpy.createIssue$.calls.mostRecent().args[1];
+      expect(posted.assignee_ids).toEqual([42]);
+    });
+
+    it('reuses an existing milestone when the title matches', async () => {
+      stubIssueResponse();
+      apiSpy.findMilestoneByTitle$.and.returnValue(
+        of({ id: 7, iid: 1, title: 'v2', state: 'active' }),
+      );
+      await service.createIssue('Ship', baseCfg(), {
+        extras: { milestone: 'v2' },
+      });
+      expect(apiSpy.findMilestoneByTitle$).toHaveBeenCalledWith(
+        'mygroup/repo',
+        'v2',
+        jasmine.any(Object),
+      );
+      expect(apiSpy.createMilestone$).not.toHaveBeenCalled();
+      const posted = apiSpy.createIssue$.calls.mostRecent().args[1];
+      expect(posted.milestone_id).toBe(7);
+    });
+
+    it('creates a milestone when none matches, then attaches its id', async () => {
+      stubIssueResponse();
+      apiSpy.findMilestoneByTitle$.and.returnValue(of(null));
+      apiSpy.createMilestone$.and.returnValue(of({ id: 88, iid: 2, title: 'v3' }));
+      await service.createIssue('Ship', baseCfg(), {
+        extras: { milestone: 'v3' },
+      });
+      expect(apiSpy.createMilestone$).toHaveBeenCalledWith(
+        'mygroup/repo',
+        'v3',
+        jasmine.any(Object),
+      );
+      const posted = apiSpy.createIssue$.calls.mostRecent().args[1];
+      expect(posted.milestone_id).toBe(88);
+    });
+
+    it('drops the milestone silently when create-if-missing fails (e.g. 403)', async () => {
+      stubIssueResponse();
+      apiSpy.findMilestoneByTitle$.and.returnValue(of(null));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      apiSpy.createMilestone$.and.returnValue(throwError(() => new Error('403')) as any);
+      await service.createIssue('Ship', baseCfg(), {
+        extras: { milestone: 'v-forbidden' },
+      });
+      const posted = apiSpy.createIssue$.calls.mostRecent().args[1];
+      expect(posted.milestone_id).toBeUndefined();
+      // The issue still lands with everything else intact.
+      expect(apiSpy.createIssue$).toHaveBeenCalled();
+    });
+
+    it('no extras → falls back to the minimal { title } body (unchanged)', async () => {
+      stubIssueResponse();
+      await service.createIssue('Plain', baseCfg());
+      expect(apiSpy.createIssue$).toHaveBeenCalledWith(
+        'mygroup/repo',
+        { title: 'Plain' },
+        jasmine.any(Object),
+      );
     });
   });
 

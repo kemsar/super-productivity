@@ -262,7 +262,14 @@ export class GitlabApiService {
    */
   createIssue$(
     projectRef: string,
-    body: { title: string; description?: string; due_date?: string },
+    body: {
+      title: string;
+      description?: string;
+      due_date?: string;
+      labels?: string;
+      assignee_ids?: number[];
+      milestone_id?: number;
+    },
     cfg: GitlabCfg,
   ): Observable<GitlabOriginalIssue> {
     const projectURL = projectRef.replace(/\//gi, '%2F');
@@ -274,6 +281,106 @@ export class GitlabApiService {
       },
       cfg,
     ).pipe(map((res) => (res as any).body as GitlabOriginalIssue));
+  }
+
+  /**
+   * GET /users?username=<u> — resolves a GitLab username to its numeric
+   * user id (needed for `assignee_ids` on POST /issues). GitLab returns
+   * an array; a strict username match yields a single element. Returns
+   * `null` if there's no match — the caller decides whether an unresolved
+   * assignee is a hard error or a warning.
+   *
+   * Used by the quick-add auto-create flow (#19) so `@kevin` on a task
+   * title translates into a real assignment when the issue lands.
+   */
+  searchUserByUsername$(
+    username: string,
+    cfg: GitlabCfg,
+  ): Observable<{ id: number; username: string; name?: string } | null> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/users`,
+        params: { username },
+      },
+      cfg,
+    ).pipe(
+      map((res) => {
+        const list = (res as any).body as
+          | { id: number; username: string; name?: string }[]
+          | null;
+        if (!Array.isArray(list) || list.length === 0) return null;
+        // The username param is an exact match on GitLab's side, but we
+        // guard against a case-difference-only response by picking the
+        // strictly-matching entry when one exists — otherwise fall back
+        // to the first result (GitLab occasionally returns the deleted
+        // "ghost" user for unknown handles, which won't match here).
+        const lowered = username.toLowerCase();
+        const exact = list.find((u) => u.username.toLowerCase() === lowered);
+        return exact ?? list[0];
+      }),
+    );
+  }
+
+  /**
+   * GET /projects/:ref/milestones?title=<t> — finds an existing milestone
+   * by exact title, or returns null. Used by #19's quick-add flow to
+   * decide whether to POST a new milestone (create-if-missing) vs.
+   * reuse an existing one.
+   *
+   * GitLab returns the milestone list including closed ones by default —
+   * we don't filter to state=active because reopening a shipped
+   * milestone on the SP side and dropping a task into it is a legitimate
+   * flow (retro-attaching a task to a past release).
+   */
+  findMilestoneByTitle$(
+    projectRef: string,
+    title: string,
+    cfg: GitlabCfg,
+  ): Observable<{ id: number; iid: number; title: string; state: string } | null> {
+    const projectURL = projectRef.replace(/\//gi, '%2F');
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/projects/${projectURL}/milestones`,
+        params: { title },
+      },
+      cfg,
+    ).pipe(
+      map((res) => {
+        const list = (res as any).body as
+          | { id: number; iid: number; title: string; state: string }[]
+          | null;
+        if (!Array.isArray(list) || list.length === 0) return null;
+        // `title` is a case-sensitive exact match server-side; belt-and-
+        // suspenders on our end with a case-insensitive equality check
+        // so `##v2` vs `##V2` doesn't create a phantom duplicate.
+        const lowered = title.toLowerCase();
+        const exact = list.find((m) => m.title.toLowerCase() === lowered);
+        return exact ?? list[0];
+      }),
+    );
+  }
+
+  /**
+   * POST /projects/:ref/milestones — creates a new milestone with the
+   * given title. Used by #19's create-if-missing flow when
+   * `findMilestoneByTitle$` came back empty. Only `title` is populated
+   * here; the user can flesh out due dates / description on the GitLab
+   * side after the milestone exists.
+   */
+  createMilestone$(
+    projectRef: string,
+    title: string,
+    cfg: GitlabCfg,
+  ): Observable<{ id: number; iid: number; title: string }> {
+    const projectURL = projectRef.replace(/\//gi, '%2F');
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/projects/${projectURL}/milestones`,
+        method: 'POST',
+        data: { title },
+      },
+      cfg,
+    ).pipe(map((res) => (res as any).body as { id: number; iid: number; title: string }));
   }
 
   /**
