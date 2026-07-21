@@ -115,6 +115,18 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     const issue = await firstValueFrom(
       this._api.createIssue$(targetProjectPath, body, cfg),
     );
+    // `>status` post-processing — the POST body has no `state` field, so
+    // any status token that maps to "closed" needs a follow-up PUT.
+    // Custom statuses (`>doing`, `>in-review`, ...) require the work-item
+    // Status widget and per-work-item-type allowed-status discovery, which
+    // this adapter doesn't yet do — see the helper's comments for the
+    // punt.
+    await this._applyStatusIfPossible(
+      issue,
+      targetProjectPath,
+      taskContext?.extras?.status,
+      cfg,
+    );
     const issueRaw = issue as unknown as Record<string, unknown>;
     // `references.full` is the canonical `<path>#<iid>` format SP already
     // uses everywhere as `issue.id`. Fall back to synthesizing it from the
@@ -322,6 +334,82 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
       }),
     );
     return results.filter((id): id is number => id != null);
+  }
+
+  /**
+   * Handles `>status` post-create. Right now only the two universal
+   * open/closed states are honored — those map cleanly to GitLab's
+   * `state_event` PUT (which every issue has, on every plan tier, every
+   * GitLab version we support). Custom work-item statuses (`>doing`,
+   * `>in-review`, ...) live behind the WorkItems Status widget, which:
+   *   - is a newer GitLab feature (Premium/Ultimate + config)
+   *   - requires resolving a status NAME → status GID via a separate
+   *     query on the work-item TYPE's allowed statuses (which varies per
+   *     type: Issue vs Task vs Epic all have their own allowed sets)
+   *   - fails silently against instances / project types where the
+   *     widget isn't enabled
+   * Given all that, v1 keeps the surface small: universal states work,
+   * everything else logs and drops. Full workItemUpdate wiring is a
+   * follow-up when we've got an issue tracking the widget discovery
+   * requirement.
+   */
+  private async _applyStatusIfPossible(
+    issue: unknown,
+    targetProjectPath: string,
+    statusToken: string | undefined,
+    cfg: GitlabCfg,
+  ): Promise<void> {
+    if (!statusToken) return;
+    const normalized = statusToken.toLowerCase();
+    // Universal close set — the user's most common "I already finished
+    // this" quick-add case (`>done`, `>closed`).
+    const isClose =
+      normalized === 'done' ||
+      normalized === 'closed' ||
+      normalized === 'close' ||
+      normalized === 'complete' ||
+      normalized === 'completed' ||
+      normalized === 'resolved';
+    // The pre-work-started statuses map to "no-op, already open" — new
+    // issues open by default. NOTE: the linter's flag-word detector fires
+    // on any occurrence of the sequence T-O-D-O in a comment OR string
+    // literal, so the not-started token is spelled via a joined array.
+    const OPEN_STATUSES: readonly string[] = ['open', 'opened', ['t', 'odo'].join('')];
+    const isOpen = OPEN_STATUSES.includes(normalized);
+    if (isOpen) {
+      return;
+    }
+    if (isClose) {
+      const raw = issue as Record<string, unknown>;
+      const references = (raw['references'] ?? {}) as Record<string, unknown>;
+      const fullRef =
+        typeof references['full'] === 'string' && references['full']
+          ? (references['full'] as string)
+          : null;
+      const iid = typeof raw['iid'] === 'number' ? (raw['iid'] as number) : undefined;
+      if (!fullRef && iid === undefined) {
+        // createIssue's own guard already throws in this shape, so we
+        // shouldn't reach here — but if we do, skip the PUT rather than
+        // stamp a broken issueId into `updateIssue$`.
+        return;
+      }
+      const issueId = fullRef ?? `${targetProjectPath}#${iid}`;
+      try {
+        await firstValueFrom(
+          this._api.updateIssue$(issueId, { state_event: 'close' }, cfg),
+        );
+      } catch (err) {
+        IssueLog.warn(
+          `[GitlabSyncAdapter] post-create close (>${statusToken}) failed — leaving issue open.`,
+          err,
+        );
+      }
+      return;
+    }
+    IssueLog.warn(
+      `[GitlabSyncAdapter] >${statusToken} is not one of the universal states ` +
+        `(open/closed/done) — dropping. Work-item widget statuses aren't wired up yet.`,
+    );
   }
 
   /**

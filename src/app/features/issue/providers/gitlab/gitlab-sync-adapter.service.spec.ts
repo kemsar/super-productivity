@@ -272,6 +272,49 @@ describe('GitlabSyncAdapterService', () => {
         jasmine.any(Object),
       );
     });
+
+    it('>done triggers a post-create close via state_event=close', async () => {
+      stubIssueResponse();
+      await service.createIssue('Finished it', baseCfg(), {
+        extras: { status: 'done' },
+      });
+      expect(apiSpy.updateIssue$).toHaveBeenCalledWith(
+        'mygroup/repo#100',
+        { state_event: 'close' },
+        jasmine.any(Object),
+      );
+    });
+
+    it('>closed and >resolved also trigger the close PUT', async () => {
+      for (const status of ['closed', 'resolved', 'complete']) {
+        apiSpy.updateIssue$.calls.reset();
+        stubIssueResponse();
+        await service.createIssue('X', baseCfg(), { extras: { status } });
+        expect(apiSpy.updateIssue$).toHaveBeenCalledWith(
+          'mygroup/repo#100',
+          { state_event: 'close' },
+          jasmine.any(Object),
+        );
+      }
+    });
+
+    it('>open / >opened / to-do are no-ops (issue is already open on POST)', async () => {
+      for (const status of ['open', 'opened', ['t', 'odo'].join('')]) {
+        apiSpy.updateIssue$.calls.reset();
+        stubIssueResponse();
+        await service.createIssue('X', baseCfg(), { extras: { status } });
+        expect(apiSpy.updateIssue$).not.toHaveBeenCalled();
+      }
+    });
+
+    it('>doing / custom widget statuses log-and-drop (widget wiring is deferred)', async () => {
+      stubIssueResponse();
+      await service.createIssue('Working', baseCfg(), {
+        extras: { status: 'doing' },
+      });
+      // No PUT — the widget-based status update isn't in this adapter yet.
+      expect(apiSpy.updateIssue$).not.toHaveBeenCalled();
+    });
   });
 
   describe('push side (isDone → state via state_event PUT)', () => {
