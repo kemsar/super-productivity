@@ -739,6 +739,17 @@ const appMinimizeHandler = (app: App): void => {
  */
 const _restoreMacActivationPolicy = (appIN: App): void => {
   if (!IS_MAC) return;
+  // Gate on the dock's actual state — if the icon is already visible,
+  // the app is in the 'regular' activation policy and this helper has
+  // nothing to do. Calling setActivationPolicy + dock.show on every
+  // focus fires a re-activate cycle on macOS: the window's own focus
+  // handler causes another focus event, and the whole thing loops into
+  // a fast flicker. Idempotent-in-effect check kills the loop while
+  // still recovering the zombie state (icon gone → we act; icon there
+  // → we don't touch it).
+  if (appIN.dock?.isVisible()) {
+    return;
+  }
   try {
     // Synchronous; try/catch is enough.
     appIN.setActivationPolicy?.('regular');
