@@ -284,6 +284,34 @@ export class GitlabApiService {
   }
 
   /**
+   * GET /users?search=<q> — fuzzy user search across username, name, and
+   * email. Returns up to `perPage` matches, order defined by GitLab (best
+   * matches typically first). Used by the quick-add overlay's `@`
+   * autocomplete dropdown (#19) — the exact-match variant below is for
+   * the auto-create resolver which needs a strict username match.
+   */
+  searchUsers$(
+    query: string,
+    cfg: GitlabCfg,
+    perPage: number = 8,
+  ): Observable<{ id: number; username: string; name?: string }[]> {
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/users`,
+        params: { search: query, per_page: String(perPage) },
+      },
+      cfg,
+    ).pipe(
+      map((res) => {
+        const list = (res as any).body as
+          | { id: number; username: string; name?: string }[]
+          | null;
+        return Array.isArray(list) ? list : [];
+      }),
+    );
+  }
+
+  /**
    * GET /users?username=<u> — resolves a GitLab username to its numeric
    * user id (needed for `assignee_ids` on POST /issues). GitLab returns
    * an array; a strict username match yields a single element. Returns
@@ -317,6 +345,34 @@ export class GitlabApiService {
         const lowered = username.toLowerCase();
         const exact = list.find((u) => u.username.toLowerCase() === lowered);
         return exact ?? list[0];
+      }),
+    );
+  }
+
+  /**
+   * GET /projects/:ref/milestones — lists all (active + closed) milestones
+   * on the given project. Used by #19's `##` autocomplete dropdown so the
+   * overlay can show the whole set at open and filter client-side by the
+   * user's typed prefix. Includes closed milestones deliberately —
+   * retroactively attaching a task to a past release is a legitimate
+   * flow (matches the reuse-existing behavior of `findMilestoneByTitle$`).
+   */
+  listMilestones$(
+    projectRef: string,
+    cfg: GitlabCfg,
+  ): Observable<{ id: number; iid: number; title: string; state: string }[]> {
+    const projectURL = projectRef.replace(/\//gi, '%2F');
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/projects/${projectURL}/milestones`,
+      },
+      cfg,
+    ).pipe(
+      map((res) => {
+        const list = (res as any).body as
+          | { id: number; iid: number; title: string; state: string }[]
+          | null;
+        return Array.isArray(list) ? list : [];
       }),
     );
   }
