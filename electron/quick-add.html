@@ -108,6 +108,52 @@
       #status.saving {
         color: var(--accent);
       }
+      /* Project autocomplete dropdown — appears while the caret is inside
+         a !<token> region. Positioned absolutely below the title textarea
+         so it doesn't push other UI around when opened. Highlighted item
+         gets the accent-tinted background; keyboard nav + click both
+         select. Capped at a scroll-y list so a large project list stays
+         usable. */
+      .autocomplete {
+        position: absolute;
+        top: 74px;
+        left: 20px;
+        right: 20px;
+        max-height: 180px;
+        overflow-y: auto;
+        background: #262626;
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+        z-index: 10;
+      }
+      .autocomplete.hidden {
+        display: none;
+      }
+      .autocomplete .row {
+        padding: 6px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .autocomplete .row .hint-key {
+        color: var(--fg-muted);
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 11px;
+      }
+      .autocomplete .row.active,
+      .autocomplete .row:hover {
+        background: rgba(79, 141, 255, 0.18);
+        color: var(--accent);
+      }
+      .autocomplete .empty {
+        padding: 8px 12px;
+        font-size: 12px;
+        color: var(--fg-muted);
+        font-style: italic;
+      }
       /* Live-parsed preview — a strip of chips populated by the parser.
          Each chip labels the token kind and shows the resolved value (or an
          unresolved warning). The whole strip hides when there's nothing to
@@ -169,7 +215,7 @@
         id="title"
         rows="1"
         autofocus
-        placeholder="What's on your mind? Try: Fix login bug !EIP @kevin ##v2 ~fri !!high >doing"
+        placeholder="What's on your mind?"
         autocomplete="off"
         spellcheck="false"
         aria-label="Task title with optional !project @user ##milestone ~date !!priority >status tokens"
@@ -183,6 +229,12 @@
         spellcheck="false"
         aria-label="Task description"
       ></textarea>
+      <div
+        id="project-autocomplete"
+        class="autocomplete hidden"
+        role="listbox"
+        aria-label="Project suggestions"
+      ></div>
       <div
         id="parse-preview"
         class="parse-preview"
@@ -215,9 +267,16 @@
         const descEl = document.getElementById('description');
         const status = document.getElementById('status');
         const preview = document.getElementById('parse-preview');
+        const autocompleteEl = document.getElementById('project-autocomplete');
         const parseText = window.SPQuickAddParser
           ? window.SPQuickAddParser.parseQuickAddText
           : null;
+
+        // Autocomplete state — populated as the user types inside a `!token`
+        // region. `matches` is the filtered list; `activeIndex` is the
+        // currently highlighted row. Keeping it in a small object keeps the
+        // pick/render/keyboard-nav helpers coherent.
+        const acState = { open: false, matches: [], activeIndex: 0, tokenRange: null };
 
         if (!parseText) {
           // Parser failed to load — the overlay is unusable. Fail loud so
@@ -255,8 +314,135 @@
           if (!needle) return null;
           const exact = projects.find((p) => normalize(p.title) === needle);
           if (exact) return exact;
-          const prefix = projects.find((p) => normalize(p.title).startsWith(needle));
-          return prefix || null;
+          // Only fall back to prefix if there's a UNIQUE prefix match.
+          // Otherwise the resolver was silently picking whichever project
+          // sorted first, which surprised users with multi-project
+          // acronyms like "!EIP" (matches both EIP Work and EIP Team).
+          // Ambiguous input should surface via the autocomplete dropdown,
+          // not get auto-resolved.
+          const prefixMatches = projects.filter((p) =>
+            normalize(p.title).startsWith(needle),
+          );
+          return prefixMatches.length === 1 ? prefixMatches[0] : null;
+        }
+
+        // Returns all projects whose normalized title starts with the
+        // needle, in original order. Used to populate the dropdown.
+        // Empty needle → return all projects (opening the dropdown right
+        // after typing `!` shows the full list, Todoist-style).
+        function listProjectMatches(token) {
+          const needle = normalize(token);
+          if (!needle) return projects.slice();
+          return projects.filter((p) => normalize(p.title).startsWith(needle));
+        }
+
+        // Detects whether the caret is currently inside a `!<token>` region
+        // in the title textarea. Returns { start, end, value } if so — where
+        // `start` is the index of the `!`, `end` is one past the token's
+        // last non-whitespace char, and `value` is the token text after the
+        // `!` (may be empty right after typing `!`). Returns null otherwise.
+        //
+        // The `!` must be at position 0 OR immediately after whitespace, so
+        // an email-style `foo!bar` doesn't trigger the dropdown.
+        function findProjectTokenAtCaret() {
+          const raw = titleEl.value;
+          const caret = titleEl.selectionStart;
+          if (caret == null) return null;
+          // Scan backwards from the caret for a `!` that starts a token.
+          let start = caret - 1;
+          while (start >= 0 && !/\s/.test(raw[start]) && raw[start] !== '!') {
+            start--;
+          }
+          if (start < 0 || raw[start] !== '!') return null;
+          if (start > 0 && !/\s/.test(raw[start - 1])) return null;
+          // Extend forward until whitespace or EOL.
+          let end = caret;
+          while (end < raw.length && !/\s/.test(raw[end])) {
+            end++;
+          }
+          // The value doesn't include the `!` itself.
+          return { start, end, value: raw.slice(start + 1, end) };
+        }
+
+        function renderAutocomplete() {
+          if (!acState.open || acState.matches.length === 0) {
+            autocompleteEl.classList.add('hidden');
+            autocompleteEl.innerHTML = '';
+            return;
+          }
+          autocompleteEl.classList.remove('hidden');
+          autocompleteEl.innerHTML = '';
+          acState.matches.forEach((project, i) => {
+            const row = document.createElement('div');
+            row.className = 'row' + (i === acState.activeIndex ? ' active' : '');
+            row.setAttribute('role', 'option');
+            row.setAttribute(
+              'aria-selected',
+              i === acState.activeIndex ? 'true' : 'false',
+            );
+            row.innerHTML =
+              '<span>' +
+              escapeHtml(project.title) +
+              '</span>' +
+              (i === acState.activeIndex ? '<span class="hint-key">↵/Tab</span>' : '');
+            row.addEventListener('mousedown', (ev) => {
+              // mousedown (not click) so the textarea keeps focus — the
+              // click event would fire AFTER a blur that we don't want.
+              ev.preventDefault();
+              pickProject(i);
+            });
+            autocompleteEl.appendChild(row);
+          });
+        }
+
+        // Refresh acState from the caret position + input. Called on every
+        // input event and after picks. When the caret leaves the token
+        // region, the dropdown closes.
+        function updateAutocomplete() {
+          const token = findProjectTokenAtCaret();
+          if (!token) {
+            acState.open = false;
+            acState.matches = [];
+            acState.tokenRange = null;
+            renderAutocomplete();
+            return;
+          }
+          const matches = listProjectMatches(token.value);
+          acState.open = matches.length > 0;
+          acState.matches = matches;
+          acState.tokenRange = { start: token.start, end: token.end };
+          // Reset the highlight to the top whenever the match set changes.
+          // Clamping keeps it valid if the previous activeIndex became
+          // out-of-bounds after filtering.
+          if (acState.activeIndex >= acState.matches.length) {
+            acState.activeIndex = 0;
+          }
+          renderAutocomplete();
+        }
+
+        // Replaces the `!token` region with `!<hyphenated-title>` and moves
+        // the caret to right after it (plus a trailing space so the next
+        // token can be typed immediately). Hyphenation is the concession
+        // the whitespace-terminated grammar forces: `!EIP Team` can't be a
+        // single token, but `!EIP-Team` can — and the resolver's
+        // `normalize` strips hyphens anyway, so the match still works.
+        function pickProject(index) {
+          if (!acState.tokenRange || !acState.matches[index]) return;
+          const project = acState.matches[index];
+          const hyphenated = String(project.title).replace(/\s+/g, '-');
+          const insert = '!' + hyphenated + ' ';
+          const raw = titleEl.value;
+          const { start, end } = acState.tokenRange;
+          const before = raw.slice(0, start);
+          const after = raw.slice(end);
+          titleEl.value = before + insert + after;
+          const newCaret = before.length + insert.length;
+          titleEl.setSelectionRange(newCaret, newCaret);
+          acState.open = false;
+          acState.matches = [];
+          acState.tokenRange = null;
+          renderAutocomplete();
+          updatePreview();
         }
 
         function escapeHtml(s) {
@@ -400,8 +586,62 @@
         // Enter. Shift+Enter and ArrowDown both open the description drawer
         // and move focus — either gesture feels natural (Shift+Enter matches
         // Slack/Discord/GitHub; ArrowDown matches Alfred/Raycast panel nav).
-        titleEl.addEventListener('input', updatePreview);
+        //
+        // When the project-autocomplete dropdown is open, ArrowUp/Down
+        // navigate it, Enter/Tab pick, Esc closes the dropdown (does NOT
+        // cancel the window). Any other input closes the dropdown by
+        // falling through to updateAutocomplete on 'input' below.
+        titleEl.addEventListener('input', () => {
+          updateAutocomplete();
+          updatePreview();
+        });
+        // Selection changes (arrow-key movement without typing) also need
+        // to update autocomplete visibility — moving out of the token
+        // region should close the dropdown.
+        titleEl.addEventListener('click', updateAutocomplete);
+        titleEl.addEventListener('keyup', (ev) => {
+          if (ev.key.startsWith('Arrow') || ev.key === 'Home' || ev.key === 'End') {
+            updateAutocomplete();
+          }
+        });
+        // Handles arrow-nav / pick / dismiss for the project-autocomplete
+        // dropdown. Returns true if the event was consumed (caller should
+        // not fall through to the default title-textarea handling).
+        function handleAutocompleteKey(ev) {
+          if (!acState.open) return false;
+          if (ev.shiftKey || ev.metaKey) return false;
+          if (ev.key === 'ArrowDown') {
+            ev.preventDefault();
+            acState.activeIndex = (acState.activeIndex + 1) % acState.matches.length;
+            renderAutocomplete();
+            return true;
+          }
+          if (ev.key === 'ArrowUp') {
+            ev.preventDefault();
+            acState.activeIndex =
+              (acState.activeIndex - 1 + acState.matches.length) % acState.matches.length;
+            renderAutocomplete();
+            return true;
+          }
+          if ((ev.key === 'Enter' || ev.key === 'Tab') && !ev.isComposing) {
+            ev.preventDefault();
+            pickProject(acState.activeIndex);
+            return true;
+          }
+          if (ev.key === 'Escape') {
+            // Close the dropdown, but leave the window open — Esc-to-cancel
+            // requires a second press when the dropdown was open.
+            ev.preventDefault();
+            acState.open = false;
+            acState.matches = [];
+            renderAutocomplete();
+            return true;
+          }
+          return false;
+        }
+
         titleEl.addEventListener('keydown', (ev) => {
+          if (handleAutocompleteKey(ev)) return;
           if (ev.key === 'Escape') {
             ev.preventDefault();
             window.close();
