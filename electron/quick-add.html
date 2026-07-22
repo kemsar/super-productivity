@@ -73,7 +73,8 @@
         border-bottom-color: var(--accent);
       }
       /* Description drawer — hidden until the user pushes Enter-with-Shift
-         or the down-arrow / Tab. Grows organically; capped at ~5 lines then
+         or the down-arrow. Grows organically via JS autosize (see the
+         inline script's `autosize` helper); capped at ~7 lines then
          scrolls. Muted styling keeps it visually secondary to the title. */
       #description {
         width: 100%;
@@ -86,8 +87,12 @@
         padding: 8px 0 0;
         resize: none;
         font-family: inherit;
-        min-height: 24px;
-        max-height: 110px;
+        /* Two-line minimum so the drawer feels substantial when opened —
+           the previous 24px min made it look like a search field, not a
+           note. `max-height` caps growth; JS autosize handles the middle. */
+        min-height: 44px;
+        max-height: 150px;
+        overflow-y: auto;
       }
       #description.hidden {
         display: none;
@@ -529,6 +534,18 @@
 
         function showDescription() {
           descEl.classList.remove('hidden');
+          autosizeDescription();
+        }
+
+        // Autosize the description textarea: reset height to auto so the
+        // browser recomputes scrollHeight from content (otherwise it stays
+        // at the previous computed height and never shrinks), then set the
+        // height to match. The CSS max-height caps growth; overflow-y kicks
+        // in at that point.
+        function autosizeDescription() {
+          if (descEl.classList.contains('hidden')) return;
+          descEl.style.height = 'auto';
+          descEl.style.height = descEl.scrollHeight + 'px';
         }
 
         async function submit() {
@@ -572,6 +589,7 @@
             titleEl.value = '';
             descEl.value = '';
             descEl.classList.add('hidden');
+            descEl.style.height = ''; // clear inline height so next open starts at CSS min
             updatePreview();
             setStatus('Saved.', '');
             setTimeout(() => {
@@ -662,7 +680,10 @@
           }
         });
 
-        descEl.addEventListener('input', updatePreview);
+        descEl.addEventListener('input', () => {
+          autosizeDescription();
+          updatePreview();
+        });
         descEl.addEventListener('keydown', (ev) => {
           if (ev.key === 'Escape') {
             ev.preventDefault();
