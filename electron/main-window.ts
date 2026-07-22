@@ -545,7 +545,7 @@ function initWinEventListeners(app: Electron.App): void {
     if (!getIsTaskWidgetAlwaysShow() && !getIsTaskWidgetUserForcedVisible()) {
       hideTaskWidget();
     }
-    _restoreMacActivationPolicy();
+    _restoreMacActivationPolicy(app);
   });
 
   mainWin.on('focus', () => {
@@ -557,7 +557,7 @@ function initWinEventListeners(app: Electron.App): void {
     ) {
       hideTaskWidget();
     }
-    _restoreMacActivationPolicy();
+    _restoreMacActivationPolicy(app);
   });
 
   // Handle hide event to show task widget
@@ -737,18 +737,19 @@ const appMinimizeHandler = (app: App): void => {
  * the app is already regular, so it's safe to hammer on every show/focus
  * of the main window.
  */
-const _restoreMacActivationPolicy = (): void => {
+const _restoreMacActivationPolicy = (appIN: App): void => {
   if (!IS_MAC) return;
   try {
-    app.setActivationPolicy?.('regular');
+    // Synchronous; try/catch is enough.
+    appIN.setActivationPolicy?.('regular');
   } catch {
     /* macOS-only API; swallow if it disappears in a future Electron */
   }
-  try {
-    app.dock?.show();
-  } catch {
-    /* macOS-only API; swallow */
-  }
+  // dock.show() returns a Promise — use .catch() so a rejection isn't
+  // unhandled. The show is fire-and-forget; we don't await the timing.
+  appIN.dock?.show().catch(() => {
+    /* macOS-only, and non-fatal if it fails */
+  });
 };
 
 const upsertKeyValue = <T extends Record<string, any> | undefined>(
