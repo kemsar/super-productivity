@@ -97,6 +97,45 @@ describe('parseQuickAddText', () => {
     });
   });
 
+  describe('#label', () => {
+    it('captures a single #label and strips it from the title', () => {
+      const r = parseQuickAddText('Fix #bug now', { now: NOW });
+      expect(r.labels).toEqual(['bug']);
+      expect(r.title).toBe('Fix now');
+    });
+
+    it('captures multiple labels, deduped case-insensitively, order preserved', () => {
+      const r = parseQuickAddText('Fix #Bug #bug #frontend thing', { now: NOW });
+      expect(r.labels).toEqual(['Bug', 'frontend']);
+      expect(r.title).toBe('Fix thing');
+    });
+
+    it('keeps a hyphenated multi-word label as one token', () => {
+      const r = parseQuickAddText('Do #needs-review please', { now: NOW });
+      expect(r.labels).toEqual(['needs-review']);
+      expect(r.title).toBe('Do please');
+    });
+
+    it('does not treat ## (milestone) as a #label', () => {
+      const r = parseQuickAddText('Ship ##v2.0 with #bug fix', { now: NOW });
+      expect(r.milestone).toBe('v2.0');
+      expect(r.labels).toEqual(['bug']);
+      expect(r.title).toBe('Ship with fix');
+    });
+
+    it('a bare # (no value) is not a token — pass through verbatim', () => {
+      const r = parseQuickAddText('Note # 3 here', { now: NOW });
+      expect(r.labels).toEqual([]);
+      expect(r.title).toBe('Note # 3 here');
+    });
+
+    it("a `#` mid-word (e.g. an issue ref) doesn't consume", () => {
+      const r = parseQuickAddText('See issue#42 later', { now: NOW });
+      expect(r.labels).toEqual([]);
+      expect(r.title).toBe('See issue#42 later');
+    });
+  });
+
   describe('~date', () => {
     it('resolves ~today', () => {
       const r = parseQuickAddText('Do it ~today', { now: NOW });

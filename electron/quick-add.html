@@ -194,6 +194,32 @@
         background: rgba(255, 82, 82, 0.15);
         color: var(--error);
       }
+      /* Save affordance for the description drawer — a plain textarea gives
+         no way to submit (Enter inserts a newline), so once the drawer is
+         open we surface an explicit Save button alongside the ⌘↵ shortcut. */
+      .desc-actions {
+        display: flex;
+        justify-content: flex-end;
+        margin-top: 6px;
+      }
+      .desc-actions.hidden {
+        display: none;
+      }
+      .desc-actions button {
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        background: rgba(79, 141, 255, 0.15);
+        color: var(--accent);
+        border: 1px solid var(--border);
+        border-radius: 4px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .desc-actions button:hover {
+        background: rgba(79, 141, 255, 0.28);
+      }
       .keys {
         margin-top: auto;
         display: flex;
@@ -223,7 +249,7 @@
         placeholder="What's on your mind?"
         autocomplete="off"
         spellcheck="false"
-        aria-label="Task title with optional !project @user ##milestone ~date !!priority >status tokens"
+        aria-label="Task title with optional !project @user #label ##milestone ~date !!priority >status tokens"
       ></textarea>
       <textarea
         id="description"
@@ -234,6 +260,17 @@
         spellcheck="false"
         aria-label="Task description"
       ></textarea>
+      <div
+        id="desc-actions"
+        class="desc-actions hidden"
+      >
+        <button
+          type="button"
+          id="desc-save"
+        >
+          Save <kbd>⌘↵</kbd>
+        </button>
+      </div>
       <div
         id="project-autocomplete"
         class="autocomplete hidden"
@@ -249,8 +286,8 @@
         <span><kbd>Enter</kbd>save</span>
         <span><kbd>Shift+Enter</kbd>description</span>
         <span
-          ><kbd>!prj</kbd> <kbd>@who</kbd> <kbd>##ms</kbd> <kbd>~date</kbd>
-          <kbd>!!pri</kbd> <kbd>&gt;stat</kbd></span
+          ><kbd>!prj</kbd> <kbd>@who</kbd> <kbd>#tag</kbd> <kbd>##ms</kbd>
+          <kbd>~date</kbd> <kbd>!!pri</kbd> <kbd>&gt;stat</kbd></span
         >
         <span><kbd>Esc</kbd>cancel</span>
       </div>
@@ -270,6 +307,8 @@
         const REST = 'http://127.0.0.1:3876';
         const titleEl = document.getElementById('title');
         const descEl = document.getElementById('description');
+        const descActions = document.getElementById('desc-actions');
+        const descSave = document.getElementById('desc-save');
         const status = document.getElementById('status');
         const preview = document.getElementById('parse-preview');
         const autocompleteEl = document.getElementById('project-autocomplete');
@@ -321,6 +360,10 @@
         // Debounced /users?search=X results. Small in-memory LRU-ish
         // (query → array). Ignored when the query changes underneath.
         const userSearchCache = new Map();
+        // Label list + custom Status options, both keyed by
+        // "providerId::spProjectId" and filtered client-side by prefix.
+        const labelCache = new Map();
+        const statusCache = new Map();
 
         if (!parseText) {
           // Parser failed to load — the overlay is unusable. Fail loud so
@@ -375,6 +418,7 @@
         // shorter prefixes (#, !).
         const TOKEN_MARKERS = [
           { kind: 'milestone', marker: '##' },
+          { kind: 'label', marker: '#' },
           { kind: 'priority', marker: '!!' },
           { kind: 'project', marker: '!' },
           { kind: 'assignee', marker: '@' },
@@ -484,18 +528,16 @@
             );
           }
           if (kind === 'status') {
-            const needle = value.toLowerCase();
-            return STATUS_OPTIONS.filter((o) => o.value.startsWith(needle)).map((o) => ({
-              value: o,
-              label: o.label,
-              insert: '>' + o.value,
-            }));
+            return fetchStatusMatches(value);
           }
           if (kind === 'assignee') {
             return fetchAssigneeMatches(value);
           }
           if (kind === 'milestone') {
             return fetchMilestoneMatches(value);
+          }
+          if (kind === 'label') {
+            return fetchLabelMatches(value);
           }
           return [];
         }
@@ -609,6 +651,106 @@
           }));
         }
 
+        // Resolves the {providerId, spProjectId} pair the async #-label and
+        // >-status dropdowns key their per-project caches on. Returns null
+        // when there's no resolved GitLab provider or !project yet.
+        async function resolveProviderProject() {
+          const provider = await resolveGitlabProvider();
+          if (!provider) return null;
+          const parsed = parseText ? parseText(currentRaw()) : null;
+          const project = parsed?.projectMarker
+            ? resolveProject(parsed.projectMarker)
+            : null;
+          if (!project?.id) return null;
+          return { provider, project };
+        }
+
+        async function fetchLabelMatches(value) {
+          const ctx = await resolveProviderProject();
+          if (!ctx) return [];
+          const cacheKey = ctx.provider.id + '::' + ctx.project.id;
+          let list = labelCache.get(cacheKey);
+          if (!list) {
+            try {
+              const url =
+                REST +
+                '/gitlab/labels?providerId=' +
+                encodeURIComponent(ctx.provider.id) +
+                '&spProjectId=' +
+                encodeURIComponent(ctx.project.id);
+              const res = await fetch(url);
+              if (!res.ok) return [];
+              const body = await res.json();
+              list = Array.isArray(body?.data) ? body.data : [];
+              labelCache.set(cacheKey, list);
+            } catch (err) {
+              console.warn('[quick-add] label list failed', err);
+              return [];
+            }
+          }
+          const needle = normalize(value);
+          const filtered = needle
+            ? list.filter((l) => normalize(l.name).startsWith(needle))
+            : list;
+          return filtered.map((l) => ({
+            value: l,
+            label: l.name,
+            insert: '#' + String(l.name).replace(/\s+/g, '-'),
+          }));
+        }
+
+        // Fetches the project's custom work-item Status options (the
+        // configurable lifecycle statuses). Empty when the instance doesn't
+        // expose the widget — callers then fall back to STATUS_OPTIONS.
+        async function fetchCustomStatuses() {
+          const ctx = await resolveProviderProject();
+          if (!ctx) return [];
+          const cacheKey = ctx.provider.id + '::' + ctx.project.id;
+          let list = statusCache.get(cacheKey);
+          if (!list) {
+            try {
+              const url =
+                REST +
+                '/gitlab/statuses?providerId=' +
+                encodeURIComponent(ctx.provider.id) +
+                '&spProjectId=' +
+                encodeURIComponent(ctx.project.id);
+              const res = await fetch(url);
+              if (!res.ok) return [];
+              const body = await res.json();
+              list = Array.isArray(body?.data) ? body.data : [];
+              statusCache.set(cacheKey, list);
+            } catch (err) {
+              console.warn('[quick-add] status list failed', err);
+              return [];
+            }
+          }
+          return list;
+        }
+
+        async function fetchStatusMatches(value) {
+          const custom = await fetchCustomStatuses();
+          if (custom.length) {
+            const needle = normalize(value);
+            const filtered = needle
+              ? custom.filter((s) => normalize(s.name).startsWith(needle))
+              : custom;
+            return filtered.map((s) => ({
+              value: s,
+              label: s.name,
+              insert: '>' + String(s.name).replace(/\s+/g, '-'),
+            }));
+          }
+          // Fallback: the universal issue state (open/closed/done) for
+          // instances without the custom Status widget.
+          const lower = value.toLowerCase();
+          return STATUS_OPTIONS.filter((o) => o.value.startsWith(lower)).map((o) => ({
+            value: o,
+            label: o.label,
+            insert: '>' + o.value,
+          }));
+        }
+
         // Refresh acState from the caret position + input. Called on every
         // input event and after picks. When the caret leaves any token
         // region, the dropdown closes.
@@ -689,23 +831,27 @@
           return d.length ? t + '\n' + d : t;
         }
 
+        function appendProjectChip(parsed) {
+          if (!parsed.projectMarker) return;
+          const project = resolveProject(parsed.projectMarker);
+          preview.appendChild(
+            project
+              ? chip('project', project.title)
+              : chip('project', '!' + parsed.projectMarker + ' (no match)', 'error'),
+          );
+        }
+
         function updatePreview() {
           if (!parseText) return;
           preview.innerHTML = '';
           const parsed = parseText(currentRaw());
 
-          if (parsed.projectMarker) {
-            const project = resolveProject(parsed.projectMarker);
-            if (project) {
-              preview.appendChild(chip('project', project.title));
-            } else {
-              preview.appendChild(
-                chip('project', '!' + parsed.projectMarker + ' (no match)', 'error'),
-              );
-            }
-          }
+          appendProjectChip(parsed);
           for (const a of parsed.assignees) {
             preview.appendChild(chip('assign', '@' + a));
+          }
+          for (const l of parsed.labels) {
+            preview.appendChild(chip('label', '#' + l));
           }
           if (parsed.milestone) {
             preview.appendChild(chip('milestone', parsed.milestone));
@@ -738,6 +884,7 @@
 
         function showDescription() {
           descEl.classList.remove('hidden');
+          descActions.classList.remove('hidden');
           autosizeDescription();
         }
 
@@ -793,6 +940,7 @@
             titleEl.value = '';
             descEl.value = '';
             descEl.classList.add('hidden');
+            descActions.classList.add('hidden');
             descEl.style.height = ''; // clear inline height so next open starts at CSS min
             updatePreview();
             setStatus('Saved.', '');
@@ -912,6 +1060,12 @@
             titleEl.focus();
           }
         });
+
+        // Explicit Save button in the description drawer. mousedown +
+        // preventDefault keeps focus off the button (so the textarea isn't
+        // blurred mid-submit); the actual submit fires on click.
+        descSave.addEventListener('mousedown', (ev) => ev.preventDefault());
+        descSave.addEventListener('click', () => submit());
 
         window.addEventListener('focus', () => titleEl.focus());
         titleEl.focus();

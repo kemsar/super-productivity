@@ -334,6 +334,7 @@ export class IssueTwoWaySyncEffects {
               const cleanTitle = parsed.title || task.title;
               const extras: QuickAddExtras = {
                 assignees: parsed.assignees.length ? parsed.assignees : undefined,
+                labels: parsed.labels.length ? parsed.labels : undefined,
                 milestone: parsed.milestone,
                 dueDate: parsed.dueDate,
                 priority: parsed.priority,

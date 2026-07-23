@@ -15,6 +15,7 @@ import { FieldMapping, FieldSyncConfig } from './issue-sync.model';
 export interface QuickAddExtras {
   description?: string;
   assignees?: string[];
+  labels?: string[];
   milestone?: string;
   dueDate?: string;
   priority?: 'low' | 'medium' | 'high' | 'urgent';

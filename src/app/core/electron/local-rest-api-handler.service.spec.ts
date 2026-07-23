@@ -1,5 +1,6 @@
 import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
+import { Store } from '@ngrx/store';
 import { LocalRestApiHandlerService } from './local-rest-api-handler.service';
 import { TaskService } from '../../features/tasks/task.service';
 import { TaskArchiveService } from '../../features/archive/task-archive.service';
@@ -8,6 +9,9 @@ import { Project } from '../../features/project/project.model';
 import { TagService } from '../../features/tag/tag.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { DateService } from '../date/date.service';
+import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-api.service';
+import { GitlabGraphqlApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-graphql-api.service';
+import { IssueProviderService } from '../../features/issue/issue-provider.service';
 import { Task, TaskWithSubTasks, TaskArchive } from '../../features/tasks/task.model';
 import {
   LocalRestApiRequestPayload,
@@ -173,6 +177,33 @@ describe('LocalRestApiHandlerService', () => {
         { provide: ProjectService, useValue: projectServiceMock },
         { provide: TagService, useValue: tagServiceMock },
         { provide: DateService, useValue: dateServiceMock },
+        // GitLab autocomplete plumbing (#19) — stubbed; these endpoints
+        // aren't exercised by this suite, but the handler injects them.
+        {
+          provide: Store,
+          useValue: jasmine.createSpyObj('Store', { select: of([]) }),
+        },
+        {
+          provide: GitlabApiService,
+          useValue: jasmine.createSpyObj('GitlabApiService', {
+            listLabels$: of([]),
+            listMilestones$: of([]),
+            searchUsers$: of([]),
+          }),
+        },
+        {
+          provide: GitlabGraphqlApiService,
+          useValue: jasmine.createSpyObj('GitlabGraphqlApiService', {
+            isAvailable: false,
+            getAllowedStatuses$: of([]),
+          }),
+        },
+        {
+          provide: IssueProviderService,
+          useValue: jasmine.createSpyObj('IssueProviderService', {
+            getCfgOnce$: of(null),
+          }),
+        },
       ],
     });
 

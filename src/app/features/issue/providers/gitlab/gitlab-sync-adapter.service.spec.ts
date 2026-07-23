@@ -3,6 +3,8 @@ import { Observable, of, throwError } from 'rxjs';
 
 import { GitlabSyncAdapterService } from './gitlab-sync-adapter.service';
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
+import { GitlabGraphqlApiService } from './gitlab-api/gitlab-graphql-api.service';
+import { GitlabIssue } from './gitlab-issue.model';
 import { GitlabCfg } from './gitlab.model';
 import { DEFAULT_GITLAB_CFG } from './gitlab.const';
 import { GitlabOriginalIssue } from './gitlab-api/gitlab-api-responses';
@@ -22,6 +24,7 @@ const makeCfg = (overrides: Partial<GitlabCfg> = {}): GitlabCfg => ({
 describe('GitlabSyncAdapterService', () => {
   let service: GitlabSyncAdapterService;
   let apiSpy: jasmine.SpyObj<GitlabApiService>;
+  let graphqlSpy: jasmine.SpyObj<GitlabGraphqlApiService>;
 
   beforeEach(() => {
     apiSpy = jasmine.createSpyObj<GitlabApiService>('GitlabApiService', [
@@ -39,10 +42,25 @@ describe('GitlabSyncAdapterService', () => {
     apiSpy.findMilestoneByTitle$.and.returnValue(of(null));
     apiSpy.createMilestone$.and.returnValue(of({ id: 999, iid: 1, title: 'stub' }));
 
+    graphqlSpy = jasmine.createSpyObj<GitlabGraphqlApiService>(
+      'GitlabGraphqlApiService',
+      ['isAvailable', 'getAllowedStatuses$', 'getById$', 'updateWorkItem$'],
+    );
+    // Default: no custom Status widget, so status handling behaves exactly
+    // like the pre-#19 universal-state-only path. Individual tests opt into
+    // the widget by re-stubbing these.
+    graphqlSpy.isAvailable.and.returnValue(false);
+    graphqlSpy.getAllowedStatuses$.and.returnValue(of([]));
+    graphqlSpy.getById$.and.returnValue(
+      of({ workItemGid: 'gid://gitlab/WorkItem/1' } as GitlabIssue),
+    );
+    graphqlSpy.updateWorkItem$.and.returnValue(of({ workItem: { id: 'x' }, errors: [] }));
+
     TestBed.configureTestingModule({
       providers: [
         GitlabSyncAdapterService,
         { provide: GitlabApiService, useValue: apiSpy },
+        { provide: GitlabGraphqlApiService, useValue: graphqlSpy },
       ],
     });
     service = TestBed.inject(GitlabSyncAdapterService);
@@ -252,8 +270,7 @@ describe('GitlabSyncAdapterService', () => {
     it('drops the milestone silently when create-if-missing fails (e.g. 403)', async () => {
       stubIssueResponse();
       apiSpy.findMilestoneByTitle$.and.returnValue(of(null));
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      apiSpy.createMilestone$.and.returnValue(throwError(() => new Error('403')) as any);
+      apiSpy.createMilestone$.and.returnValue(throwError(() => new Error('403')));
       await service.createIssue('Ship', baseCfg(), {
         extras: { milestone: 'v-forbidden' },
       });
@@ -307,13 +324,80 @@ describe('GitlabSyncAdapterService', () => {
       }
     });
 
-    it('>doing / custom widget statuses log-and-drop (widget wiring is deferred)', async () => {
+    it('>doing drops when the custom Status widget is unavailable (falls back to universal state, which has no match)', async () => {
       stubIssueResponse();
       await service.createIssue('Working', baseCfg(), {
         extras: { status: 'doing' },
       });
-      // No PUT — the widget-based status update isn't in this adapter yet.
+      // GraphQL unavailable (default) → no custom status; 'doing' is not a
+      // universal state → nothing applied.
+      expect(graphqlSpy.updateWorkItem$).not.toHaveBeenCalled();
       expect(apiSpy.updateIssue$).not.toHaveBeenCalled();
+    });
+
+    it('applies a matching custom Status via workItemUpdate (punctuation-insensitive name match)', async () => {
+      stubIssueResponse();
+      graphqlSpy.isAvailable.and.returnValue(true);
+      graphqlSpy.getAllowedStatuses$.and.returnValue(
+        of([
+          {
+            id: 'gid://gitlab/WorkItems::Statuses::Custom::Status/7',
+            name: 'In progress',
+          },
+          { id: 'gid://gitlab/WorkItems::Statuses::Custom::Status/9', name: 'Done' },
+        ]),
+      );
+      await service.createIssue('Working', baseCfg(), {
+        // Parser hands us the hyphenated/lowercased form.
+        extras: { status: 'in-progress' },
+      });
+      expect(graphqlSpy.updateWorkItem$).toHaveBeenCalledWith(
+        {
+          id: 'gid://gitlab/WorkItem/1',
+          statusWidget: { status: 'gid://gitlab/WorkItems::Statuses::Custom::Status/7' },
+        },
+        jasmine.any(Object),
+      );
+      // Custom status applied → no universal-state PUT.
+      expect(apiSpy.updateIssue$).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the close PUT when the widget is available but the token matches no custom status and is a universal close', async () => {
+      stubIssueResponse();
+      graphqlSpy.isAvailable.and.returnValue(true);
+      graphqlSpy.getAllowedStatuses$.and.returnValue(
+        of([{ id: 'gid://.../7', name: 'In progress' }]),
+      );
+      await service.createIssue('Finished', baseCfg(), {
+        extras: { status: 'done' },
+      });
+      expect(graphqlSpy.updateWorkItem$).not.toHaveBeenCalled();
+      expect(apiSpy.updateIssue$).toHaveBeenCalledWith(
+        'mygroup/repo#100',
+        { state_event: 'close' },
+        jasmine.any(Object),
+      );
+    });
+
+    it('falls back to universal state when the workItemUpdate mutation fails', async () => {
+      stubIssueResponse();
+      graphqlSpy.isAvailable.and.returnValue(true);
+      graphqlSpy.getAllowedStatuses$.and.returnValue(
+        of([{ id: 'gid://.../9', name: 'Done' }]),
+      );
+      graphqlSpy.updateWorkItem$.and.returnValue(
+        throwError(() => new Error('widget not supported for this work-item type')),
+      );
+      await service.createIssue('Finished', baseCfg(), {
+        extras: { status: 'done' },
+      });
+      // Mutation attempted and threw → fall through to the close PUT.
+      expect(graphqlSpy.updateWorkItem$).toHaveBeenCalled();
+      expect(apiSpy.updateIssue$).toHaveBeenCalledWith(
+        'mygroup/repo#100',
+        { state_event: 'close' },
+        jasmine.any(Object),
+      );
     });
   });
 

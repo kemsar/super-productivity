@@ -378,6 +378,27 @@ export class GitlabApiService {
   }
 
   /**
+   * GET /projects/:ref/labels — the project's label list (names only). Used
+   * by the quick-add overlay's `#` autocomplete dropdown (#19). GitLab
+   * paginates labels; page-1 (default 20) is plenty for a typing dropdown,
+   * and the overlay filters client-side by prefix.
+   */
+  listLabels$(projectRef: string, cfg: GitlabCfg): Observable<{ name: string }[]> {
+    const projectURL = projectRef.replace(/\//gi, '%2F');
+    return this._sendRawRequest$(
+      {
+        url: `${this._baseApiLink(cfg)}/projects/${projectURL}/labels`,
+      },
+      cfg,
+    ).pipe(
+      map((res) => {
+        const list = (res as any).body as { name: string }[] | null;
+        return Array.isArray(list) ? list : [];
+      }),
+    );
+  }
+
+  /**
    * GET /projects/:ref/milestones?title=<t> — finds an existing milestone
    * by exact title, or returns null. Used by #19's quick-add flow to
    * decide whether to POST a new milestone (create-if-missing) vs.

@@ -17,6 +17,7 @@ import {
 import { selectEnabledIssueProviders } from '../../features/issue/store/issue-provider.selectors';
 import { IssueProvider } from '../../features/issue/issue.model';
 import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-api.service';
+import { GitlabGraphqlApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-graphql-api.service';
 import { GitlabCfg } from '../../features/issue/providers/gitlab/gitlab.model';
 import { IssueProviderService } from '../../features/issue/issue-provider.service';
 
@@ -179,7 +180,7 @@ const isTaskInToday = (
 type SimpleRouteHandler = (
   requestId: string,
   body: unknown,
-  query: Record<string, string | undefined>,
+  query: Record<string, string | string[]>,
 ) => Promise<LocalRestApiResponsePayload>;
 
 @Injectable({
@@ -193,6 +194,7 @@ export class LocalRestApiHandlerService {
   private readonly _dateService = inject(DateService);
   private readonly _store = inject(Store);
   private readonly _gitlabApi = inject(GitlabApiService);
+  private readonly _gitlabGraphqlApi = inject(GitlabGraphqlApiService);
   private readonly _issueProviderService = inject(IssueProviderService);
 
   // Exact-match route table. New endpoints add an entry here instead of
@@ -257,6 +259,16 @@ export class LocalRestApiHandlerService {
       method: 'GET',
       path: '/gitlab/milestones',
       handle: (rid, _body, q) => this._handleGitlabMilestones(rid, q),
+    },
+    {
+      method: 'GET',
+      path: '/gitlab/labels',
+      handle: (rid, _body, q) => this._handleGitlabLabels(rid, q),
+    },
+    {
+      method: 'GET',
+      path: '/gitlab/statuses',
+      handle: (rid, _body, q) => this._handleGitlabStatuses(rid, q),
     },
   ];
   private _isInitialized = false;
@@ -800,9 +812,9 @@ export class LocalRestApiHandlerService {
    */
   private async _handleGitlabProviderForProject(
     requestId: string,
-    query: Record<string, string | undefined>,
+    query: Record<string, string | string[]>,
   ): Promise<LocalRestApiResponsePayload> {
-    const spProjectId = query.spProjectId;
+    const spProjectId = getQueryParam(query, 'spProjectId');
     if (!spProjectId) {
       return createErrorResponse(
         requestId,
@@ -844,10 +856,10 @@ export class LocalRestApiHandlerService {
    */
   private async _handleGitlabUsers(
     requestId: string,
-    query: Record<string, string | undefined>,
+    query: Record<string, string | string[]>,
   ): Promise<LocalRestApiResponsePayload> {
-    const providerId = query.providerId;
-    const search = query.search?.trim() ?? '';
+    const providerId = getQueryParam(query, 'providerId');
+    const search = getQueryParam(query, 'search')?.trim() ?? '';
     if (!providerId) {
       return createErrorResponse(
         requestId,
@@ -881,10 +893,10 @@ export class LocalRestApiHandlerService {
    */
   private async _handleGitlabMilestones(
     requestId: string,
-    query: Record<string, string | undefined>,
+    query: Record<string, string | string[]>,
   ): Promise<LocalRestApiResponsePayload> {
-    const providerId = query.providerId;
-    const spProjectId = query.spProjectId;
+    const providerId = getQueryParam(query, 'providerId');
+    const spProjectId = getQueryParam(query, 'spProjectId');
     if (!providerId || !spProjectId) {
       return createErrorResponse(
         requestId,
@@ -920,5 +932,106 @@ export class LocalRestApiHandlerService {
     // Todoist-familiar experience.
     const list = await firstValueFrom(this._gitlabApi.listMilestones$(gitlabPath, cfg));
     return createSuccessResponse(requestId, 200, list);
+  }
+
+  /**
+   * GET /gitlab/labels?providerId=X&spProjectId=Z
+   *
+   * The mapped GitLab project's label list (names only). Powers the
+   * overlay's `#` autocomplete dropdown; the overlay filters client-side
+   * by the typed prefix. Empty list when the SP project maps to no GitLab
+   * path.
+   */
+  private async _handleGitlabLabels(
+    requestId: string,
+    query: Record<string, string | string[]>,
+  ): Promise<LocalRestApiResponsePayload> {
+    const providerId = getQueryParam(query, 'providerId');
+    const spProjectId = getQueryParam(query, 'spProjectId');
+    if (!providerId || !spProjectId) {
+      return createErrorResponse(
+        requestId,
+        400,
+        'INVALID_INPUT',
+        'providerId and spProjectId query parameters are required',
+      );
+    }
+    const providers = await firstValueFrom(
+      this._store.select(selectEnabledIssueProviders),
+    );
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider || provider.issueProviderKey !== 'GITLAB') {
+      return createErrorResponse(
+        requestId,
+        404,
+        'PROVIDER_NOT_FOUND',
+        `No GitLab provider with id ${providerId}`,
+      );
+    }
+    const cfg = await firstValueFrom(
+      this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
+    );
+    const gitlabPath = this._resolveGitlabPath(provider, cfg, spProjectId);
+    if (!gitlabPath) {
+      return createSuccessResponse(requestId, 200, []);
+    }
+    const list = await firstValueFrom(this._gitlabApi.listLabels$(gitlabPath, cfg));
+    return createSuccessResponse(requestId, 200, list);
+  }
+
+  /**
+   * GET /gitlab/statuses?providerId=X&spProjectId=Z
+   *
+   * The mapped GitLab project's custom work-item Status options (the
+   * configurable per-lifecycle statuses — To do / In progress / Done /
+   * ..., distinct from the universal issue `state`). Powers the overlay's
+   * `>` dropdown. Returns `[]` when the instance doesn't expose the Status
+   * widget (CE / no license / older GitLab / group-mode path that GraphQL
+   * can't resolve) or the query errors — the overlay then falls back to
+   * the universal open/closed/done options.
+   */
+  private async _handleGitlabStatuses(
+    requestId: string,
+    query: Record<string, string | string[]>,
+  ): Promise<LocalRestApiResponsePayload> {
+    const providerId = getQueryParam(query, 'providerId');
+    const spProjectId = getQueryParam(query, 'spProjectId');
+    if (!providerId || !spProjectId) {
+      return createErrorResponse(
+        requestId,
+        400,
+        'INVALID_INPUT',
+        'providerId and spProjectId query parameters are required',
+      );
+    }
+    const providers = await firstValueFrom(
+      this._store.select(selectEnabledIssueProviders),
+    );
+    const provider = providers.find((p) => p.id === providerId);
+    if (!provider || provider.issueProviderKey !== 'GITLAB') {
+      return createErrorResponse(
+        requestId,
+        404,
+        'PROVIDER_NOT_FOUND',
+        `No GitLab provider with id ${providerId}`,
+      );
+    }
+    const cfg = await firstValueFrom(
+      this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
+    );
+    const gitlabPath = this._resolveGitlabPath(provider, cfg, spProjectId);
+    if (!gitlabPath) {
+      return createSuccessResponse(requestId, 200, []);
+    }
+    try {
+      const statuses = await firstValueFrom(
+        this._gitlabGraphqlApi.getAllowedStatuses$(cfg, gitlabPath),
+      );
+      return createSuccessResponse(requestId, 200, statuses);
+    } catch {
+      // GraphQL declined (no widget / no license / disabled endpoint) —
+      // an empty list tells the overlay to use its static fallback.
+      return createSuccessResponse(requestId, 200, []);
+    }
   }
 }

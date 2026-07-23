@@ -16,6 +16,7 @@
  * Tokens (all optional, any order, any position in the title line):
  *   !<project>       — target project (existing #26 semantics)
  *   @<username>      — assignee, repeatable
+ *   #<label>         — label / tag, repeatable (GitLab label ↔ SP tag)
  *   ##<milestone>    — milestone (create-if-missing on GitLab side)
  *   ~<date>          — due date. today | tom(orrow) | mon..sun | YYYY-MM-DD | MM-DD
  *   !!<priority>     — priority. low | med(ium) | high | urgent
@@ -198,6 +199,7 @@
      *     description?: string,       // line-2+ (trimmed at tail)
      *     projectMarker?: string,     // raw `<value>` after `!`
      *     assignees: string[],        // deduped case-insensitive, order preserved
+     *     labels: string[],           // `#<label>`, deduped case-insensitive, order preserved
      *     milestone?: string,
      *     dueDate?: string,           // ISO YYYY-MM-DD (undefined if unparseable)
      *     dueDateRaw?: string,        // raw token content (always set when ~ present)
@@ -220,6 +222,7 @@
         description: split.description,
         projectMarker: undefined,
         assignees: [],
+        labels: [],
         milestone: undefined,
         dueDate: undefined,
         dueDateRaw: undefined,
@@ -233,6 +236,7 @@
       var i = 0;
       var titleOut = '';
       var seenAssignees = Object.create(null);
+      var seenLabels = Object.create(null);
 
       var readTokenValue = function (startIdx) {
         var end = startIdx;
@@ -261,6 +265,20 @@
           if (msVal.value) {
             result.milestone = msVal.value;
             i = msVal.nextIdx;
+            continue;
+          }
+        }
+        // Single `#` — a label/tag. Reached only when the `##` branch above
+        // didn't consume the token (i.e. this is a lone `#`, not `##`).
+        if (ch === '#') {
+          var lbVal = readTokenValue(i + 1);
+          if (lbVal.value) {
+            var lblKey = lbVal.value.toLowerCase();
+            if (!seenLabels[lblKey]) {
+              seenLabels[lblKey] = true;
+              result.labels.push(lbVal.value);
+            }
+            i = lbVal.nextIdx;
             continue;
           }
         }

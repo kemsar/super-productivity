@@ -2,6 +2,7 @@ import { inject, Injectable } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 
 import { GitlabApiService } from './gitlab-api/gitlab-api.service';
+import { GitlabGraphqlApiService } from './gitlab-api/gitlab-graphql-api.service';
 import { GitlabCfg } from './gitlab.model';
 import {
   IssueSyncAdapter,
@@ -55,6 +56,7 @@ const GITLAB_FIELD_MAPPINGS: FieldMapping[] = [
 @Injectable({ providedIn: 'root' })
 export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   private readonly _api = inject(GitlabApiService);
+  private readonly _graphqlApi = inject(GitlabGraphqlApiService);
 
   getFieldMappings(): FieldMapping[] {
     return GITLAB_FIELD_MAPPINGS;
@@ -115,12 +117,11 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     const issue = await firstValueFrom(
       this._api.createIssue$(targetProjectPath, body, cfg),
     );
-    // `>status` post-processing — the POST body has no `state` field, so
-    // any status token that maps to "closed" needs a follow-up PUT.
-    // Custom statuses (`>doing`, `>in-review`, ...) require the work-item
-    // Status widget and per-work-item-type allowed-status discovery, which
-    // this adapter doesn't yet do — see the helper's comments for the
-    // punt.
+    // `>status` post-processing — the POST body has no `state`/status
+    // field, so status is applied in a follow-up call: a custom work-item
+    // Status widget update when the instance supports it, otherwise a
+    // `state_event` close for the universal done/closed states. See the
+    // helper.
     await this._applyStatusIfPossible(
       issue,
       targetProjectPath,
@@ -277,12 +278,19 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     if (extras.dueDate) {
       body.due_date = extras.dueDate;
     }
+    // Labels: `#<label>` tokens plus the priority scoped-label. GitLab
+    // accepts a comma-separated `labels` string and creates any that don't
+    // yet exist. Priority has no first-class field, so it rides the
+    // scoped-label convention `priority::<value>` (#7 tracks the mapping).
+    const labels: string[] = [];
+    if (extras.labels?.length) {
+      labels.push(...extras.labels);
+    }
     if (extras.priority) {
-      // GitLab has no first-class priority field. The scoped-label
-      // convention `priority::<value>` is the community standard (and the
-      // one #7 tracks for bidirectional mapping). Multiple labels would
-      // be comma-joined; only priority for now.
-      body.labels = `priority::${extras.priority}`;
+      labels.push(`priority::${extras.priority}`);
+    }
+    if (labels.length) {
+      body.labels = labels.join(',');
     }
 
     // Resolve @assignees and ##milestone concurrently — both are optional
@@ -337,21 +345,20 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   }
 
   /**
-   * Handles `>status` post-create. Right now only the two universal
-   * open/closed states are honored — those map cleanly to GitLab's
-   * `state_event` PUT (which every issue has, on every plan tier, every
-   * GitLab version we support). Custom work-item statuses (`>doing`,
-   * `>in-review`, ...) live behind the WorkItems Status widget, which:
-   *   - is a newer GitLab feature (Premium/Ultimate + config)
-   *   - requires resolving a status NAME → status GID via a separate
-   *     query on the work-item TYPE's allowed statuses (which varies per
-   *     type: Issue vs Task vs Epic all have their own allowed sets)
-   *   - fails silently against instances / project types where the
-   *     widget isn't enabled
-   * Given all that, v1 keeps the surface small: universal states work,
-   * everything else logs and drops. Full workItemUpdate wiring is a
-   * follow-up when we've got an issue tracking the widget discovery
-   * requirement.
+   * Handles `>status` post-create. Two layers, in order:
+   *
+   *  1. **Custom work-item Status widget** (`>in-progress`, `>doing`, ...).
+   *     Resolves the typed name → status GID against the project's allowed
+   *     statuses (GraphQL), then applies it via `workItemUpdate`. Only
+   *     attempted when GraphQL is available; any failure (widget absent,
+   *     no license, gid mismatch, missing permission) falls through to
+   *     layer 2 rather than aborting the create.
+   *  2. **Universal issue state** (`>done`/`>closed` → `state_event: close`;
+   *     `>open`/`>opened`/not-started → no-op, new issues open by default).
+   *     Works on every tier/version.
+   *
+   * A token that matches neither a custom status nor a universal state is
+   * logged and dropped — the issue still lands, just without the status.
    */
   private async _applyStatusIfPossible(
     issue: unknown,
@@ -360,9 +367,38 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     cfg: GitlabCfg,
   ): Promise<void> {
     if (!statusToken) return;
+    const raw = issue as Record<string, unknown>;
+    const references = (raw['references'] ?? {}) as Record<string, unknown>;
+    const fullRef =
+      typeof references['full'] === 'string' && references['full']
+        ? (references['full'] as string)
+        : null;
+    const iid = typeof raw['iid'] === 'number' ? (raw['iid'] as number) : undefined;
+    // createIssue's own guard already throws when both are missing, so we
+    // shouldn't reach here without an id — but guard anyway rather than
+    // stamp a broken `path#` into a follow-up call.
+    const issueId = fullRef ?? (iid !== undefined ? `${targetProjectPath}#${iid}` : null);
+
+    // Layer 1: custom Status widget.
+    if (issueId && this._graphqlApi.isAvailable(cfg)) {
+      try {
+        const applied = await this._applyCustomStatus(
+          issueId,
+          targetProjectPath,
+          statusToken,
+          cfg,
+        );
+        if (applied) return;
+      } catch (err) {
+        IssueLog.warn(
+          `[GitlabSyncAdapter] custom status >${statusToken} could not be applied — falling back to universal state.`,
+          err,
+        );
+      }
+    }
+
+    // Layer 2: universal open/closed state.
     const normalized = statusToken.toLowerCase();
-    // Universal close set — the user's most common "I already finished
-    // this" quick-add case (`>done`, `>closed`).
     const isClose =
       normalized === 'done' ||
       normalized === 'closed' ||
@@ -375,25 +411,11 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     // on any occurrence of the sequence T-O-D-O in a comment OR string
     // literal, so the not-started token is spelled via a joined array.
     const OPEN_STATUSES: readonly string[] = ['open', 'opened', ['t', 'odo'].join('')];
-    const isOpen = OPEN_STATUSES.includes(normalized);
-    if (isOpen) {
+    if (OPEN_STATUSES.includes(normalized)) {
       return;
     }
     if (isClose) {
-      const raw = issue as Record<string, unknown>;
-      const references = (raw['references'] ?? {}) as Record<string, unknown>;
-      const fullRef =
-        typeof references['full'] === 'string' && references['full']
-          ? (references['full'] as string)
-          : null;
-      const iid = typeof raw['iid'] === 'number' ? (raw['iid'] as number) : undefined;
-      if (!fullRef && iid === undefined) {
-        // createIssue's own guard already throws in this shape, so we
-        // shouldn't reach here — but if we do, skip the PUT rather than
-        // stamp a broken issueId into `updateIssue$`.
-        return;
-      }
-      const issueId = fullRef ?? `${targetProjectPath}#${iid}`;
+      if (!issueId) return;
       try {
         await firstValueFrom(
           this._api.updateIssue$(issueId, { state_event: 'close' }, cfg),
@@ -407,9 +429,52 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
       return;
     }
     IssueLog.warn(
-      `[GitlabSyncAdapter] >${statusToken} is not one of the universal states ` +
-        `(open/closed/done) — dropping. Work-item widget statuses aren't wired up yet.`,
+      `[GitlabSyncAdapter] >${statusToken} matched neither a custom Status ` +
+        `nor a universal state (open/closed/done) — dropping.`,
     );
+  }
+
+  /**
+   * Resolves `statusToken` to one of the project's allowed custom statuses
+   * and applies it to the just-created work item via `workItemUpdate`.
+   * Returns `true` when a status was matched AND the mutation succeeded;
+   * `false` when there's nothing to match (no widget / no match) so the
+   * caller can fall back to universal state handling. Throws only on an
+   * actual mutation failure, which the caller also treats as fall-through.
+   *
+   * Matching is punctuation-insensitive: the parser hands us the token
+   * lowercased with spaces hyphenated (`in-progress`), and GitLab status
+   * names are free-form (`In progress`), so both sides are normalized to
+   * bare alphanumerics before comparing.
+   */
+  private async _applyCustomStatus(
+    issueId: string,
+    targetProjectPath: string,
+    statusToken: string,
+    cfg: GitlabCfg,
+  ): Promise<boolean> {
+    const statuses = await firstValueFrom(
+      this._graphqlApi.getAllowedStatuses$(cfg, targetProjectPath),
+    );
+    if (!statuses.length) return false;
+    const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = norm(statusToken);
+    const match =
+      statuses.find((s) => norm(s.name) === target) ??
+      statuses.find((s) => norm(s.name).startsWith(target));
+    if (!match) return false;
+    // The work-item mutation needs the work-item GID, which the REST create
+    // response doesn't carry — fetch it via GraphQL by the canonical issue id.
+    const gqlIssue = await firstValueFrom(this._graphqlApi.getById$(issueId, cfg));
+    const workItemGid = gqlIssue.workItemGid;
+    if (!workItemGid) return false;
+    await firstValueFrom(
+      this._graphqlApi.updateWorkItem$(
+        { id: workItemGid, statusWidget: { status: match.id } },
+        cfg,
+      ),
+    );
+    return true;
   }
 
   /**

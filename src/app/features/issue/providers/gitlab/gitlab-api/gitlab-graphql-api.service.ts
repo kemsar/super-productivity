@@ -98,8 +98,49 @@ const WORK_ITEM_UPDATE_MUTATION = `
     }
   }`;
 
+// Reads the custom Status widget's allowed values per work-item type (#19).
+// This is the WorkItems "Status" widget — the configurable per-lifecycle
+// status (To do / In progress / Done / ...), NOT the universal issue `state`
+// (opened/closed). Gated behind Premium/Ultimate + the work_item_status
+// feature; instances without it return no WorkItemWidgetDefinitionStatus
+// fragment (empty list) or error the whole query (handled → REST fallback).
+const PROJECT_STATUSES_QUERY = `
+  query SpProjectStatuses($fullPath: ID!) {
+    project(fullPath: $fullPath) {
+      id
+      workItemTypes {
+        nodes {
+          id
+          name
+          widgetDefinitions {
+            ... on WorkItemWidgetDefinitionStatus {
+              allowedStatuses {
+                nodes { id name }
+              }
+            }
+          }
+        }
+      }
+    }
+  }`;
+
 interface CurrentUserResponse {
   readonly currentUser: { readonly username: string } | null;
+}
+
+interface ProjectStatusesResponse {
+  readonly project: {
+    readonly workItemTypes: {
+      readonly nodes: ReadonlyArray<{
+        readonly name: string;
+        readonly widgetDefinitions?: ReadonlyArray<{
+          readonly allowedStatuses?: {
+            readonly nodes: ReadonlyArray<{ readonly id: string; readonly name: string }>;
+          };
+        }>;
+      }>;
+    } | null;
+  } | null;
 }
 
 // Marker on thrown errors so callers can distinguish "GraphQL declined this
@@ -203,6 +244,9 @@ export class GitlabGraphqlApiService {
       cfg,
       WORK_ITEM_UPDATE_MUTATION,
       { input },
+      // A write failing (validation, permissions, unsupported widget) must
+      // not disable GraphQL reads for the session.
+      false,
     ).pipe(
       map((data) => {
         const payload = data.workItemUpdate;
@@ -212,6 +256,52 @@ export class GitlabGraphqlApiService {
           throw new Error(`GitLab workItemUpdate: ${payload.errors.join('; ')}`);
         }
         return payload;
+      }),
+    );
+  }
+
+  /**
+   * Resolves the custom Status widget's allowed values for the project's
+   * Issue work-item type (#19). Returns `[]` when the instance doesn't
+   * expose the widget (CE / no license / older GitLab) — callers treat an
+   * empty list as "no custom statuses, fall back to state". Prefers the
+   * Issue type's allowed set; falls back to the first type that populates
+   * any (early lifecycles only wired the Task type).
+   */
+  getAllowedStatuses$(
+    cfg: GitlabCfg,
+    projectPath?: string,
+  ): Observable<{ id: string; name: string }[]> {
+    return this._post$<ProjectStatusesResponse>(
+      cfg,
+      PROJECT_STATUSES_QUERY,
+      { fullPath: this._resolveFullPath(cfg, projectPath) },
+      // Optional widget — never let its absence disable the core read path.
+      false,
+    ).pipe(
+      map((data) => {
+        const types = data.project?.workItemTypes?.nodes ?? [];
+        const statusesForType = (
+          type: (typeof types)[number] | undefined,
+        ): { id: string; name: string }[] =>
+          (type?.widgetDefinitions ?? []).flatMap((w) => w.allowedStatuses?.nodes ?? []);
+        const issueType = types.find((t) => t.name?.toLowerCase() === 'issue');
+        let statuses = statusesForType(issueType);
+        if (!statuses.length) {
+          for (const type of types) {
+            statuses = statusesForType(type);
+            if (statuses.length) break;
+          }
+        }
+        const seen = new Set<string>();
+        const deduped: { id: string; name: string }[] = [];
+        for (const s of statuses) {
+          if (s?.id && !seen.has(s.id)) {
+            seen.add(s.id);
+            deduped.push({ id: s.id, name: s.name });
+          }
+        }
+        return deduped;
       }),
     );
   }
@@ -306,6 +396,12 @@ export class GitlabGraphqlApiService {
     cfg: GitlabCfg,
     query: string,
     variables: Record<string, unknown>,
+    // Optional queries (e.g. the custom Status widget, which many instances
+    // don't expose) pass `false` so their failure DOESN'T disable GraphQL
+    // for the whole session — otherwise a widget the server doesn't support
+    // would poison the core issue-read path down to REST. They still reject,
+    // so the caller's own try/catch handles the miss.
+    markUnavailableOnError = true,
   ): Observable<T> {
     return defer(() => {
       const url = this._endpoint(cfg);
@@ -320,24 +416,28 @@ export class GitlabGraphqlApiService {
           GitlabGqlResponse<T>
         >(url, { query, variables }, { headers, observe: 'body' })
         .pipe(
-          map((res) => this._unwrap<T>(res, cfg)),
-          catchError((err) => this._onTransportError$(err, cfg)),
+          map((res) => this._unwrap<T>(res, cfg, markUnavailableOnError)),
+          catchError((err) => this._onTransportError$(err, cfg, markUnavailableOnError)),
         );
     });
   }
 
-  private _unwrap<T>(res: GitlabGqlResponse<T>, cfg: GitlabCfg): T {
+  private _unwrap<T>(
+    res: GitlabGqlResponse<T>,
+    cfg: GitlabCfg,
+    markUnavailableOnError = true,
+  ): T {
     if (res.errors && res.errors.length > 0) {
       const messages = res.errors.map((e) => e.message).join('; ');
       IssueLog.log('GitLab GraphQL errors', { messages });
-      this._markUnavailable(cfg);
+      if (markUnavailableOnError) this._markUnavailable(cfg);
       throw {
         [HANDLED_ERROR_PROP_STR]: `${ISSUE_PROVIDER_HUMANIZED[GITLAB_TYPE]}: ${messages}`,
         gitlabGraphqlUnavailable: GITLAB_GRAPHQL_UNAVAILABLE,
       };
     }
     if (!res.data) {
-      this._markUnavailable(cfg);
+      if (markUnavailableOnError) this._markUnavailable(cfg);
       throw {
         [HANDLED_ERROR_PROP_STR]: `${ISSUE_PROVIDER_HUMANIZED[GITLAB_TYPE]}: empty GraphQL response`,
         gitlabGraphqlUnavailable: GITLAB_GRAPHQL_UNAVAILABLE,
@@ -346,14 +446,19 @@ export class GitlabGraphqlApiService {
     return res.data;
   }
 
-  private _onTransportError$(err: unknown, cfg: GitlabCfg): Observable<never> {
+  private _onTransportError$(
+    err: unknown,
+    cfg: GitlabCfg,
+    markUnavailableOnError = true,
+  ): Observable<never> {
     // Any transport-level failure disables GraphQL for this session so the
     // caller's REST fallback takes over — no snack here, since the fallback
-    // will render its own errors if IT also fails.
+    // will render its own errors if IT also fails. Optional queries opt out
+    // (see `_post$`) so they can't drag the whole endpoint down.
     IssueLog.log('GitLab GraphQL request failed', {
       hasStatus: !!(err as { status?: number }).status,
     });
-    this._markUnavailable(cfg);
+    if (markUnavailableOnError) this._markUnavailable(cfg);
     return throwError({
       [HANDLED_ERROR_PROP_STR]: `${ISSUE_PROVIDER_HUMANIZED[GITLAB_TYPE]}: GraphQL transport error`,
       gitlabGraphqlUnavailable: GITLAB_GRAPHQL_UNAVAILABLE,
