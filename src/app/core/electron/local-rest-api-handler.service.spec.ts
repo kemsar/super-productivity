@@ -7,10 +7,12 @@ import { TaskArchiveService } from '../../features/archive/task-archive.service'
 import { ProjectService } from '../../features/project/project.service';
 import { Project } from '../../features/project/project.model';
 import { TagService } from '../../features/tag/tag.service';
+import { Tag } from '../../features/tag/tag.model';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { DateService } from '../date/date.service';
 import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-api.service';
 import { GitlabGraphqlApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-graphql-api.service';
+import { IssueProvider } from '../../features/issue/issue.model';
 import { IssueProviderService } from '../../features/issue/issue-provider.service';
 import { Task, TaskWithSubTasks, TaskArchive } from '../../features/tasks/task.model';
 import {
@@ -25,6 +27,8 @@ describe('LocalRestApiHandlerService', () => {
   let projectServiceMock: jasmine.SpyObj<ProjectService>;
   let tagServiceMock: jasmine.SpyObj<TagService>;
   let dateServiceMock: jasmine.SpyObj<DateService>;
+  let storeMock: jasmine.SpyObj<Store>;
+  let tagsSnapshot: Tag[];
   let activeProjects: Project[];
   let requestHandler: ((payload: LocalRestApiRequestPayload) => void) | null = null;
   let responsePromiseResolve: ((response: LocalRestApiResponsePayload) => void) | null =
@@ -153,12 +157,19 @@ describe('LocalRestApiHandlerService', () => {
       value: (() => activeProjects) as ProjectService['list'],
     });
 
+    tagsSnapshot = [];
     tagServiceMock = jasmine.createSpyObj(
       'TagService',
       ['addTag', 'updateTag', 'deleteTag'],
       {
         tags$: of([]),
       },
+    );
+    // `tags` is a signal (callable) on the real service; the #label fallback
+    // reads it synchronously via `tags()`.
+    (tagServiceMock as unknown as { tags: () => Tag[] }).tags = () => tagsSnapshot;
+    tagServiceMock.addTag.and.callFake(
+      (t: Partial<Tag>) => `tag-${(t.title ?? '').toLowerCase()}`,
     );
 
     dateServiceMock = jasmine.createSpyObj<DateService>(
@@ -168,6 +179,12 @@ describe('LocalRestApiHandlerService', () => {
     );
     dateServiceMock.todayStr.and.returnValue('2026-05-12');
     dateServiceMock.getStartOfNextDayDiffMs.and.returnValue(0);
+
+    // Default: no enabled issue providers → the #label fallback treats every
+    // project as non-GitLab. Tests that need a GitLab auto-create provider
+    // re-stub `storeMock.select`.
+    storeMock = jasmine.createSpyObj<Store>('Store', ['select']);
+    storeMock.select.and.returnValue(of([]));
 
     TestBed.configureTestingModule({
       providers: [
@@ -179,10 +196,7 @@ describe('LocalRestApiHandlerService', () => {
         { provide: DateService, useValue: dateServiceMock },
         // GitLab autocomplete plumbing (#19) — stubbed; these endpoints
         // aren't exercised by this suite, but the handler injects them.
-        {
-          provide: Store,
-          useValue: jasmine.createSpyObj('Store', { select: of([]) }),
-        },
+        { provide: Store, useValue: storeMock },
         {
           provide: GitlabApiService,
           useValue: jasmine.createSpyObj('GitlabApiService', {
@@ -531,6 +545,10 @@ describe('LocalRestApiHandlerService', () => {
           'New Task',
           false,
           jasmine.any(Object),
+          false,
+          // REST creates ignore short-syntax — the overlay grammar is the
+          // single source of truth (#19).
+          true,
         );
       });
 
@@ -568,9 +586,100 @@ describe('LocalRestApiHandlerService', () => {
           }),
         );
 
-        expect(taskServiceMock.add).toHaveBeenCalledWith('New Task', false, {
-          title: 'New Task',
-          notes: 'allowed',
+        expect(taskServiceMock.add).toHaveBeenCalledWith(
+          'New Task',
+          false,
+          {
+            title: 'New Task',
+            notes: 'allowed',
+          },
+          false,
+          true,
+        );
+      });
+
+      describe('quick-add #label fallback (#19)', () => {
+        const stubCreated = (): void => {
+          Object.defineProperty(taskServiceMock, 'getByIdOnce$', {
+            get: () => (_id: string) => of(createMockTask('new-task-id')),
+            configurable: true,
+          });
+        };
+
+        it('resolves #label to an SP tag, strips the token, and ignores short-syntax (non-GitLab project)', async () => {
+          stubCreated();
+          await sendRequestAndWait(
+            createRequest('POST', '/tasks', {
+              body: { title: 'Fix login #bug', projectId: 'p1' },
+            }),
+          );
+          expect(tagServiceMock.addTag).toHaveBeenCalledWith({ title: 'bug' });
+          expect(taskServiceMock.add).toHaveBeenCalledWith(
+            'Fix login',
+            false,
+            jasmine.objectContaining({ projectId: 'p1', tagIds: ['tag-bug'] }),
+            false,
+            true,
+          );
+        });
+
+        it('reuses an existing tag (case-insensitive) instead of creating a new one', async () => {
+          tagsSnapshot = [{ id: 'tag-existing', title: 'Bug' } as Tag];
+          stubCreated();
+          await sendRequestAndWait(
+            createRequest('POST', '/tasks', { body: { title: 'Fix #bug' } }),
+          );
+          expect(tagServiceMock.addTag).not.toHaveBeenCalled();
+          expect(taskServiceMock.add).toHaveBeenCalledWith(
+            'Fix',
+            false,
+            jasmine.objectContaining({ tagIds: ['tag-existing'] }),
+            false,
+            true,
+          );
+        });
+
+        it('leaves the raw title and skips SP-tag resolution when a GitLab auto-create provider owns the project', async () => {
+          storeMock.select.and.returnValue(
+            of([
+              {
+                id: 'prov1',
+                issueProviderKey: 'GITLAB',
+                token: 't',
+                isAutoCreateIssues: true,
+                defaultProjectId: 'p1',
+              } as unknown as IssueProvider,
+            ]),
+          );
+          stubCreated();
+          await sendRequestAndWait(
+            createRequest('POST', '/tasks', {
+              body: { title: 'Fix #bug', projectId: 'p1' },
+            }),
+          );
+          expect(tagServiceMock.addTag).not.toHaveBeenCalled();
+          expect(taskServiceMock.add).toHaveBeenCalledWith(
+            'Fix #bug',
+            false,
+            jasmine.any(Object),
+            false,
+            true,
+          );
+        });
+
+        it('does not treat ##milestone as a #label', async () => {
+          stubCreated();
+          await sendRequestAndWait(
+            createRequest('POST', '/tasks', { body: { title: 'Ship ##v2.0' } }),
+          );
+          expect(tagServiceMock.addTag).not.toHaveBeenCalled();
+          expect(taskServiceMock.add).toHaveBeenCalledWith(
+            'Ship ##v2.0',
+            false,
+            jasmine.any(Object),
+            false,
+            true,
+          );
         });
       });
 

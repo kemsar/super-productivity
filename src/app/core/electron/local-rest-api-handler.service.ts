@@ -14,6 +14,7 @@ import {
   LocalRestApiRequestPayload,
   LocalRestApiResponsePayload,
 } from '../../../../electron/shared-with-frontend/local-rest-api.model';
+import { parseQuickAddText } from '../../../../electron/shared-with-frontend/quick-add-parser';
 import { selectEnabledIssueProviders } from '../../features/issue/store/issue-provider.selectors';
 import { IssueProvider } from '../../features/issue/issue.model';
 import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-api.service';
@@ -23,6 +24,23 @@ import { IssueProviderService } from '../../features/issue/issue-provider.servic
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+/**
+ * Removes only the `#<label>` tokens (whitespace-delimited) the parser
+ * extracted, leaving every other overlay token (`!project`, `~date`,
+ * `##milestone`, ...) untouched. Tokens are whitespace-terminated so a
+ * label value never contains spaces; `##milestone` is safe because its
+ * token is `##milestone`, never `#<label>`.
+ */
+const stripQuickAddLabelTokens = (rawTitle: string, labels: string[]): string => {
+  if (!labels.length) return rawTitle;
+  const tokens = new Set(labels.map((l) => '#' + l));
+  return rawTitle
+    .split(/\s+/)
+    .filter((word) => !tokens.has(word))
+    .join(' ')
+    .trim();
+};
 
 /** Only these fields may be set via the REST API to prevent state corruption. */
 const ALLOWED_TASK_FIELDS = new Set<string>([
@@ -524,10 +542,88 @@ export class LocalRestApiHandlerService {
       return createSuccessResponse(requestId, 201, createdSubTask);
     }
 
-    const taskId = this._taskService.add(title, false, additionalFields);
+    // The overlay (the only POST /tasks creator) has its OWN token grammar
+    // (!project @user #label ##milestone ~date !!priority >status), parsed by
+    // the auto-create effect / handled here. SP's short-syntax
+    // (#tag/@date/+project/!deadline) overlaps and corrupts it — e.g.
+    // `##milestone` spawns a stray "milestone" tag, and it double-creates
+    // tags on GitLab overlay tasks. So REST creates ignore short-syntax and
+    // the overlay grammar is the single source of truth. See #19.
+    const parsed = parseQuickAddText(title);
+    const projectId =
+      typeof additionalFields.projectId === 'string'
+        ? additionalFields.projectId
+        : undefined;
+    let finalTitle = title;
+    let fields: Partial<Task> = additionalFields;
+    // `#label` → SP tags, but ONLY when no GitLab auto-create provider owns
+    // the project. When one does, the GitLab path turns `#label` into a
+    // GitLab label (which syncs back to a tag), so we must leave the raw
+    // title for its effect to re-parse. Build a NEW fields object — Task's
+    // tagIds is readonly.
+    if (parsed.labels.length && !(await this._isGitlabAutoCreateProject(projectId))) {
+      const tagIds = this._resolveLabelsToTagIds(
+        parsed.labels,
+        Array.isArray(additionalFields.tagIds) ? [...additionalFields.tagIds] : [],
+      );
+      fields = { ...additionalFields, tagIds };
+      finalTitle = stripQuickAddLabelTokens(title, parsed.labels) || title;
+    }
+    const taskId = this._taskService.add(finalTitle, false, fields, false, true);
     const createdTask = await this._getTaskById(taskId);
 
     return createSuccessResponse(requestId, 201, createdTask);
+  }
+
+  /**
+   * True if an enabled GitLab provider with auto-create targets `projectId`
+   * (direct `defaultProjectId` or a `treeImportMapping` entry). When true,
+   * the auto-create effect owns `#label` → GitLab label, so the REST handler
+   * must not also resolve labels to SP tags (would double up + strip the
+   * token the effect needs). Mirrors the effect's gate for GitLab.
+   */
+  private async _isGitlabAutoCreateProject(
+    projectId: string | undefined,
+  ): Promise<boolean> {
+    if (!projectId) return false;
+    const providers = await firstValueFrom(
+      this._store.select(selectEnabledIssueProviders),
+    );
+    return providers.some((p) => {
+      if (p.issueProviderKey !== 'GITLAB') return false;
+      const g = p as unknown as {
+        token?: string | null;
+        isAutoCreateIssues?: boolean;
+        defaultProjectId?: string | null;
+        treeImportMapping?: Record<string, { spProjectId: string }>;
+      };
+      if (!g.token || !g.isAutoCreateIssues) return false;
+      if (g.defaultProjectId === projectId) return true;
+      return g.treeImportMapping
+        ? Object.values(g.treeImportMapping).some((e) => e.spProjectId === projectId)
+        : false;
+    });
+  }
+
+  /**
+   * Resolves `#label` tokens to SP tag ids for the overlay's non-GitLab
+   * fallback: reuses an existing tag (case-insensitive, never the virtual
+   * TODAY_TAG) or creates one, merged into any pre-existing tagIds (deduped,
+   * order preserved).
+   */
+  private _resolveLabelsToTagIds(labels: string[], existingTagIds: string[]): string[] {
+    const existing = this._tagService.tags();
+    const ids = [...existingTagIds];
+    for (const label of labels) {
+      const trimmed = label.trim();
+      if (!trimmed) continue;
+      const match = existing.find(
+        (t) => t.title.toLowerCase() === trimmed.toLowerCase() && t.id !== TODAY_TAG.id,
+      );
+      const id = match ? match.id : this._tagService.addTag({ title: trimmed });
+      if (!ids.includes(id)) ids.push(id);
+    }
+    return ids;
   }
 
   private async _handleTaskRoutes(
