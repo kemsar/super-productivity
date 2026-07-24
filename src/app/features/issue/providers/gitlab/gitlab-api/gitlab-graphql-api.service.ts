@@ -104,18 +104,26 @@ const WORK_ITEM_UPDATE_MUTATION = `
 // (opened/closed). Gated behind Premium/Ultimate + the work_item_status
 // feature; instances without it return no WorkItemWidgetDefinitionStatus
 // fragment (empty list) or error the whole query (handled → REST fallback).
+// Query shape mirrors GitLab's own `namespaceWorkItemTypes` frontend query:
+// the statuses live on the work-item TYPE's Status widget DEFINITION, keyed by
+// namespace full path (a project's full path resolves to its ProjectNamespace).
+// Two things that are easy to get wrong and silently return nothing:
+//   - it's `namespace(fullPath:)`, NOT `project(fullPath:)`
+//   - `allowedStatuses` is a FLAT list, NOT a `{ nodes { … } }` connection
 const PROJECT_STATUSES_QUERY = `
   query SpProjectStatuses($fullPath: ID!) {
-    project(fullPath: $fullPath) {
+    namespace(fullPath: $fullPath) {
       id
       workItemTypes {
         nodes {
           id
           name
           widgetDefinitions {
+            type
             ... on WorkItemWidgetDefinitionStatus {
               allowedStatuses {
-                nodes { id name }
+                id
+                name
               }
             }
           }
@@ -129,14 +137,15 @@ interface CurrentUserResponse {
 }
 
 interface ProjectStatusesResponse {
-  readonly project: {
+  readonly namespace: {
     readonly workItemTypes: {
       readonly nodes: ReadonlyArray<{
         readonly name: string;
         readonly widgetDefinitions?: ReadonlyArray<{
-          readonly allowedStatuses?: {
-            readonly nodes: ReadonlyArray<{ readonly id: string; readonly name: string }>;
-          };
+          readonly allowedStatuses?: ReadonlyArray<{
+            readonly id: string;
+            readonly name: string;
+          }>;
         }>;
       }>;
     } | null;
@@ -280,11 +289,11 @@ export class GitlabGraphqlApiService {
       false,
     ).pipe(
       map((data) => {
-        const types = data.project?.workItemTypes?.nodes ?? [];
+        const types = data.namespace?.workItemTypes?.nodes ?? [];
         const statusesForType = (
           type: (typeof types)[number] | undefined,
         ): { id: string; name: string }[] =>
-          (type?.widgetDefinitions ?? []).flatMap((w) => w.allowedStatuses?.nodes ?? []);
+          (type?.widgetDefinitions ?? []).flatMap((w) => w.allowedStatuses ?? []);
         const issueType = types.find((t) => t.name?.toLowerCase() === 'issue');
         let statuses = statusesForType(issueType);
         if (!statuses.length) {

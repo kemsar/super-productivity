@@ -276,4 +276,64 @@ describe('GitlabGraphqlApiService', () => {
       expect(payload.workItem?.id).toBe('gid://gitlab/Issue/1');
     });
   });
+
+  describe('getAllowedStatuses$', () => {
+    it("queries the namespace and flattens the Issue type's allowed statuses", async () => {
+      const p = firstValueFrom(service.getAllowedStatuses$(CFG));
+      const req = httpMock.expectOne(GRAPHQL_URL);
+      // Guards against the two schema footguns: namespace (not project) and
+      // a flat allowedStatuses list (not a nodes connection).
+      expect(req.request.body.query).toContain('namespace(fullPath:');
+      expect(req.request.body.query).not.toContain('project(fullPath:');
+      req.flush({
+        data: {
+          namespace: {
+            id: 'gid://gitlab/Group/1',
+            workItemTypes: {
+              nodes: [
+                {
+                  name: 'Task',
+                  widgetDefinitions: [
+                    {
+                      type: 'STATUS',
+                      allowedStatuses: [{ id: 'gid://s/9', name: 'Task done' }],
+                    },
+                  ],
+                },
+                {
+                  name: 'Issue',
+                  widgetDefinitions: [
+                    { type: 'ASSIGNEES' },
+                    {
+                      type: 'STATUS',
+                      allowedStatuses: [
+                        { id: 'gid://s/1', name: 'New request' },
+                        { id: 'gid://s/2', name: 'In progress' },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+      });
+
+      const statuses = await p;
+      // Prefers the Issue type over Task.
+      expect(statuses).toEqual([
+        { id: 'gid://s/1', name: 'New request' },
+        { id: 'gid://s/2', name: 'In progress' },
+      ]);
+    });
+
+    it('returns [] (no throw) when the widget is absent', async () => {
+      const p = firstValueFrom(service.getAllowedStatuses$(CFG));
+      const req = httpMock.expectOne(GRAPHQL_URL);
+      req.flush({
+        data: { namespace: { id: 'gid://gitlab/Group/1', workItemTypes: { nodes: [] } } },
+      });
+      expect(await p).toEqual([]);
+    });
+  });
 });
