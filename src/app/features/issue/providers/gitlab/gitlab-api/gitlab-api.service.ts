@@ -378,16 +378,20 @@ export class GitlabApiService {
   }
 
   /**
-   * GET /projects/:ref/labels — the project's label list (names only). Used
-   * by the quick-add overlay's `#` autocomplete dropdown (#19). GitLab
-   * paginates labels; page-1 (default 20) is plenty for a typing dropdown,
-   * and the overlay filters client-side by prefix.
+   * GET /projects/:ref/labels — the labels available to the project (names
+   * only). Used by the quick-add overlay's `#` autocomplete dropdown (#19).
+   * `include_ancestor_groups=true` is set explicitly so group labels appear
+   * (older GitLab defaults it to false, which hides everything but the few
+   * project-level labels). `per_page=100` is GitLab's max; the first page is
+   * ample for a prefix-typing dropdown (filtered client-side) — projects with
+   * >100 labels would drop the tail, which is an acceptable cap here.
    */
   listLabels$(projectRef: string, cfg: GitlabCfg): Observable<{ name: string }[]> {
     const projectURL = projectRef.replace(/\//gi, '%2F');
     return this._sendRawRequest$(
       {
         url: `${this._baseApiLink(cfg)}/projects/${projectURL}/labels`,
+        params: { per_page: '100', include_ancestor_groups: 'true' },
       },
       cfg,
     ).pipe(
