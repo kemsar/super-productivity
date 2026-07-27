@@ -22,6 +22,7 @@ import {
   CurrentProviderPrivateCfg,
 } from '../core/types/sync.types';
 import { loadSyncProviders } from './sync-providers.factory';
+import { getSyncEnvMismatch } from './sync-env-guard.util';
 import { isSyncTargetChanged } from './sync-target-identity.util';
 import { SyncEpochChangedError } from '../core/errors/sync-errors';
 
@@ -260,6 +261,14 @@ export class SyncProviderManager {
    * Callers should gate on `isProviderReady$` before using the returned provider.
    */
   getActiveProvider(): SyncProviderBase<SyncProviderId> | null {
+    // Safety gate: refuse to hand out a provider when the build's environment
+    // doesn't match the app window (e.g. a dev bundle loaded by the packaged
+    // file:// window), which would sync the wrong remote folder and corrupt
+    // data. Returning null (already a documented state) disables every remote
+    // path — main sync, immediate upload, restore — at a single choke point.
+    if (getSyncEnvMismatch()) {
+      return null;
+    }
     return this._activeProvider;
   }
 

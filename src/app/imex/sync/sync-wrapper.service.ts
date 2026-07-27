@@ -51,6 +51,7 @@ import {
   toSyncProviderId,
 } from '../../op-log/sync-exports';
 import { SyncProviderManager } from '../../op-log/sync-providers/provider-manager.service';
+import { getSyncEnvMismatch } from '../../op-log/sync-providers/sync-env-guard.util';
 import { LegacyPfDbService } from '../../core/persistence/legacy-pf-db.service';
 import { T } from '../../t.const';
 import { getSyncErrorStr } from './get-sync-error-str';
@@ -289,6 +290,22 @@ export class SyncWrapperService {
    *   snackbar the user never asked about. The next sync cycle retries anyway.
    */
   async sync(isUserTriggered = false): Promise<SyncStatus | 'HANDLED_ERROR'> {
+    // Safety gate: refuse to sync when the build's environment doesn't match the
+    // app window (e.g. a dev bundle running in the packaged file:// window),
+    // which would sync the wrong remote folder and can wipe data. The provider
+    // manager also returns no active provider in this state; this surfaces a
+    // loud, persistent error so the mismatch isn't silent.
+    const envMismatch = getSyncEnvMismatch();
+    if (envMismatch) {
+      SyncLog.err('Sync refused: dev/prod environment mismatch', envMismatch);
+      this._snackService.open({
+        msg: T.F.SYNC.S.ENV_MISMATCH,
+        type: 'ERROR',
+        config: { duration: 0 },
+      });
+      return 'HANDLED_ERROR';
+    }
+
     // Block sync if encryption operation is in progress (password change, enable/disable)
     if (this._isEncryptionOperationInProgress$.getValue()) {
       SyncLog.log('Sync blocked: encryption operation in progress');
