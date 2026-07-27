@@ -53,6 +53,7 @@ import { getTaskRepeatInfoText } from './get-task-repeat-info-text.util';
 import { DateTimeFormatService } from '../../../core/date-time-format/date-time-format.service';
 import { IS_TOUCH_PRIMARY } from '../../../util/is-mouse-primary';
 import { DialogScheduleTaskComponent } from '../../planner/dialog-schedule-task/dialog-schedule-task.component';
+import { DialogEditTaskRepeatCfgComponent } from '../../task-repeat-cfg/dialog-edit-task-repeat-cfg/dialog-edit-task-repeat-cfg.component';
 import { DialogDeadlineComponent } from '../dialog-deadline/dialog-deadline.component';
 import { MatIconButton } from '@angular/material/button';
 import { MatTooltip } from '@angular/material/tooltip';
@@ -636,6 +637,21 @@ export class TaskDetailPanelComponent implements OnInit, AfterViewInit, OnDestro
       autoFocus: false,
       restoreFocus: true,
       data: { task: this.task() },
+    });
+  }
+
+  // Opens the recurrence dialog directly from the detail panel's dedicated
+  // Repeat row. Upstream #9286 folded recurrence into the schedule dialog and
+  // dropped this opener, but that button is gated to NON-issue tasks — our
+  // fork's #17 feature keeps a standalone row so issue-linked tasks can be
+  // made repeatable too. See the Repeat row in the template.
+  editTaskRepeatCfg(): void {
+    this._matDialog.open(DialogEditTaskRepeatCfgComponent, {
+      restoreFocus: true,
+      data: {
+        task: this.task(),
+        targetDate: this.task().dueDay || getDbDateStr(new Date(this.task().created)),
+      },
     });
   }
 
