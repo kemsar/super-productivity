@@ -1,6 +1,6 @@
 import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Injectable, inject } from '@angular/core';
-import { EMPTY, Observable, defer, of, throwError } from 'rxjs';
+import { EMPTY, Observable, defer, firstValueFrom, of, throwError } from 'rxjs';
 import { catchError, expand, map, mergeMap, reduce, take, tap } from 'rxjs/operators';
 
 import { HANDLED_ERROR_PROP_STR } from '../../../../../app.constants';
@@ -313,6 +313,45 @@ export class GitlabGraphqlApiService {
         return deduped;
       }),
     );
+  }
+
+  /**
+   * Resolve `statusName` against the project's allowed custom statuses and
+   * apply it to the issue's work item via `workItemUpdate`. Punctuation- and
+   * case-insensitive match (exact name first, then prefix). Returns `true`
+   * only when a status matched AND the mutation succeeded; `false` when
+   * there's no widget / no match / no work-item GID, so callers can fall back
+   * to universal open/closed state. Throws only on an actual mutation failure.
+   */
+  async applyStatusByName(
+    issueId: string,
+    projectPath: string,
+    statusName: string,
+    cfg: GitlabCfg,
+  ): Promise<boolean> {
+    const statuses = await firstValueFrom(this.getAllowedStatuses$(cfg, projectPath));
+    if (!statuses.length) {
+      return false;
+    }
+    const norm = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const target = norm(statusName);
+    const match =
+      statuses.find((s) => norm(s.name) === target) ??
+      statuses.find((s) => norm(s.name).startsWith(target));
+    if (!match) {
+      return false;
+    }
+    // The work-item mutation needs the work-item GID, which REST responses
+    // don't carry — fetch it via GraphQL by the canonical issue id.
+    const gqlIssue = await firstValueFrom(this.getById$(issueId, cfg));
+    const workItemGid = gqlIssue?.workItemGid;
+    if (!workItemGid) {
+      return false;
+    }
+    await firstValueFrom(
+      this.updateWorkItem$({ id: workItemGid, statusWidget: { status: match.id } }, cfg),
+    );
+    return true;
   }
 
   // --- internals ---------------------------------------------------------

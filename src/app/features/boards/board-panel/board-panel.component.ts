@@ -10,10 +10,16 @@ import { CdkDrag, CdkDragDrop, CdkDropList } from '@angular/cdk/drag-drop';
 import { PlannerTaskComponent } from '../../planner/planner-task/planner-task.component';
 import {
   BoardPanelCfg,
+  BoardPanelCfgIssueState,
   BoardPanelCfgScheduledState,
   BoardPanelCfgTaskDoneState,
   BoardPanelCfgTaskTypeFilter,
 } from '../boards.model';
+import { GITLAB_TYPE } from '../../issue/issue.const';
+import {
+  GitlabBoardSyncService,
+  GitlabBoardTargets,
+} from '../../issue/providers/gitlab/gitlab-board-sync.service';
 import {
   buildComparator,
   doesTaskMatchPanel,
@@ -83,6 +89,7 @@ export class BoardPanelComponent {
   store = inject(Store);
   taskService = inject(TaskService);
   _matDialog = inject(MatDialog);
+  private _gitlabBoardSyncService = inject(GitlabBoardSyncService);
 
   allTasks$ = this.store.select(selectAllTasksInActiveProjects);
   allTasks = toSignal(this.allTasks$, {
@@ -259,6 +266,37 @@ export class BoardPanelComponent {
 
     this._checkToScheduledTask(panelCfg, task.id);
     this._checkBacklogState(panelCfg, task.id);
+    this._applyIssueTargets(panelCfg, task);
+  }
+
+  /**
+   * When a task is dropped into a column that filters by issue State and/or a
+   * single custom Status, push that change to the linked GitLab issue (and
+   * mirror it onto the task snapshot). Mirrors how the done/scheduled/project
+   * filters make a dropped task conform to its destination column.
+   *
+   * Status is only auto-applied when the column targets exactly ONE status —
+   * a multi-status column is ambiguous, so we leave the status untouched.
+   */
+  private _applyIssueTargets(panelCfg: BoardPanelCfg, task: TaskCopy): void {
+    if (task.issueType !== GITLAB_TYPE || !task.issueId) {
+      return;
+    }
+    const targets: GitlabBoardTargets = {};
+    if (panelCfg.issueState === BoardPanelCfgIssueState.Open) {
+      targets.state = 'open';
+    } else if (panelCfg.issueState === BoardPanelCfgIssueState.Closed) {
+      targets.state = 'closed';
+    }
+    if (panelCfg.issueStatuses?.length === 1) {
+      targets.statusName = panelCfg.issueStatuses[0];
+    }
+    if (!targets.state && !targets.statusName) {
+      return;
+    }
+    // Fire-and-forget: the service updates the task snapshot on success and
+    // surfaces a snackbar on failure (consistent with updateTags on drop).
+    void this._gitlabBoardSyncService.applyPanelTargets(task, targets);
   }
 
   async afterTaskAdd({ taskId, isAddToBottom, isNewTask }: TaskAddEvent): Promise<void> {

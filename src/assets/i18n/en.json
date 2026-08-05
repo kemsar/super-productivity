@@ -195,6 +195,11 @@
         "BACKLOG_TASK_FILTER_ONLY_BACKLOG": "Backlog only",
         "BACKLOG_TASK_FILTER_TYPE": "Backlog tasks",
         "COLUMNS": "Columns",
+        "ISSUE_STATE": "Issue State",
+        "ISSUE_STATE_ALL": "All",
+        "ISSUE_STATE_CLOSED": "Closed",
+        "ISSUE_STATE_OPEN": "Open",
+        "ISSUE_STATUS": "Issue Status",
         "ONLY_PARENT_TASKS": "Only parent tasks",
         "PROJECT": "Project",
         "PROJECT_ALL": "All Projects",
@@ -521,13 +526,17 @@
         "LABELS": "Labels",
         "MARK_AS_CHECKED": "Mark updates as checked",
         "PROJECT": "Project",
+        "STATE": "State",
         "STATUS": "Status",
         "SUMMARY": "Summary",
-        "WORK_ITEM_STATUS": "Workflow Status",
         "WRITE_A_COMMENT": "Write a comment"
       },
       "S": {
-        "ERR_UNKNOWN": "GitLab: Unknown error {{statusCode}} {{errorMsg}}"
+        "ERR_UNKNOWN": "GitLab: Unknown error {{statusCode}} {{errorMsg}}",
+        "ISSUE_STATE_UPDATED": "GitLab issue {{state}}",
+        "ISSUE_STATUS_NOT_AVAILABLE": "Custom status isn't available for this GitLab project",
+        "ISSUE_STATUS_UPDATED": "GitLab status set to {{status}}",
+        "ISSUE_UPDATE_FAILED": "Could not update the GitLab issue"
       }
     },
     "ISSUE": {

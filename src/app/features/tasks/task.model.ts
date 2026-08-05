@@ -67,6 +67,20 @@ export interface IssueFieldsForTask {
   issueAttachmentNr?: number;
   issueTimeTracked?: IssueTaskTimeTracked;
   issuePoints?: number;
+  /**
+   * Snapshot of the linked issue's lifecycle state ('open'|'closed', REST
+   * vocabulary). Provider-populated during import/poll (currently GitLab).
+   * Persisted on the task so board columns can filter by issue state
+   * synchronously and offline — issue objects are never cached in the store.
+   * Undefined for non-issue tasks or providers that don't emit it.
+   */
+  issueState?: string;
+  /**
+   * Snapshot of the linked issue's customizable work-item status name (e.g.
+   * "In progress"). GitLab-only, GraphQL status widget; undefined otherwise.
+   * Persisted for the same board-filter reason as {@link issueState}.
+   */
+  issueStatus?: string;
   issueLastSyncedValues?: Record<string, unknown>;
   /**
    * Timestamp (ms) of the most recent non-system, non-bot comment on the

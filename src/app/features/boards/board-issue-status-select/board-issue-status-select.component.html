@@ -1,0 +1,11 @@
+<mat-select
+  [errorStateMatcher]="errorStateMatcher"
+  [formControl]="formControl"
+  [formlyAttributes]="field"
+  [id]="id"
+  [multiple]="true"
+>
+  @for (status of availableStatuses(); track status) {
+    <mat-option [value]="status">{{ status }}</mat-option>
+  }
+</mat-select>

@@ -24,6 +24,13 @@ import { WorkContextService } from '../../work-context/work-context.service';
 import { ProjectService } from '../../project/project.service';
 import { signal } from '@angular/core';
 import { TODAY_TAG } from '../../tag/tag.const';
+import { GitlabBoardSyncService } from '../../issue/providers/gitlab/gitlab-board-sync.service';
+
+// Stub the GitLab board-sync collaborator so instantiating the component
+// doesn't pull in its real dependency graph (IssueService → TagService, ...).
+const GITLAB_BOARD_SYNC_MOCK = {
+  applyPanelTargets: (): Promise<void> => Promise.resolve(),
+};
 
 describe('BoardPanelComponent - Backlog Feature', () => {
   let component: BoardPanelComponent;
@@ -107,6 +114,7 @@ describe('BoardPanelComponent - Backlog Feature', () => {
         }),
       ],
       providers: [
+        { provide: GitlabBoardSyncService, useValue: GITLAB_BOARD_SYNC_MOCK },
         provideMockStore({}),
         provideMockActions(() => actions$),
         { provide: Store, useValue: storeMock },
@@ -266,6 +274,7 @@ describe('BoardPanelComponent - Hidden Project Backlog', () => {
         }),
       ],
       providers: [
+        { provide: GitlabBoardSyncService, useValue: GITLAB_BOARD_SYNC_MOCK },
         provideMockStore({}),
         provideMockActions(() => actions$),
         { provide: Store, useValue: storeMock },
@@ -358,6 +367,7 @@ describe('BoardPanelComponent - Tag match mode, sort, inline-create computeds', 
         }),
       ],
       providers: [
+        { provide: GitlabBoardSyncService, useValue: GITLAB_BOARD_SYNC_MOCK },
         provideMockStore({}),
         provideMockActions(() => actions$),
         { provide: Store, useValue: storeMock },
@@ -775,6 +785,7 @@ describe('BoardPanelComponent - drop()', () => {
         }),
       ],
       providers: [
+        { provide: GitlabBoardSyncService, useValue: GITLAB_BOARD_SYNC_MOCK },
         provideMockStore({}),
         provideMockActions(() => actions$),
         { provide: Store, useValue: storeMock },

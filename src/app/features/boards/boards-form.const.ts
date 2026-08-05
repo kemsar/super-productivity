@@ -2,6 +2,7 @@ import { LimitedFormlyFieldConfig } from '../config/global-config.model';
 import {
   BoardCfg,
   BoardPanelCfg,
+  BoardPanelCfgIssueState,
   BoardPanelCfgScheduledState,
   BoardPanelCfgTaskDoneState,
   BoardPanelCfgTaskTypeFilter,
@@ -216,6 +217,39 @@ export const BOARDS_FORM: LimitedFormlyFieldConfig<BoardCfg>[] = [
                 label: T.F.BOARDS.FORM.BACKLOG_TASK_FILTER_ONLY_BACKLOG,
               },
             ],
+          },
+        },
+        {
+          key: 'issueState',
+          type: 'radio',
+          // Optional filter — must NOT be `required`, or a panel cfg that
+          // predates this field would render the whole form invalid. A
+          // field-level defaultValue populates the model to All (= don't
+          // filter) so the radio always has a valid selection.
+          defaultValue: BoardPanelCfgIssueState.All,
+          props: {
+            label: T.F.BOARDS.FORM.ISSUE_STATE,
+            options: [
+              {
+                value: BoardPanelCfgIssueState.All,
+                label: T.F.BOARDS.FORM.ISSUE_STATE_ALL,
+              },
+              {
+                value: BoardPanelCfgIssueState.Open,
+                label: T.F.BOARDS.FORM.ISSUE_STATE_OPEN,
+              },
+              {
+                value: BoardPanelCfgIssueState.Closed,
+                label: T.F.BOARDS.FORM.ISSUE_STATE_CLOSED,
+              },
+            ],
+          },
+        },
+        {
+          key: 'issueStatuses',
+          type: 'board-issue-status-select',
+          props: {
+            label: T.F.BOARDS.FORM.ISSUE_STATUS,
           },
         },
         {

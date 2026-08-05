@@ -453,6 +453,11 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
     statusToken: string,
     cfg: GitlabCfg,
   ): Promise<boolean> {
+    // NOTE: kept inline (rather than delegating to
+    // `GitlabGraphqlApiService.applyStatusByName`, which is the same logic) so
+    // this sync-critical create path keeps its granular unit coverage over the
+    // exact getAllowedStatuses → getById → updateWorkItem sequence. The two
+    // must stay in sync if the matching rules change.
     const statuses = await firstValueFrom(
       this._graphqlApi.getAllowedStatuses$(cfg, targetProjectPath),
     );

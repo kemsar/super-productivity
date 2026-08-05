@@ -1,5 +1,6 @@
 import {
   BoardPanelCfg,
+  BoardPanelCfgIssueState,
   BoardPanelCfgScheduledState,
   BoardPanelCfgTaskDoneState,
   BoardPanelCfgTaskTypeFilter,
@@ -87,7 +88,29 @@ export const sanitizePanelCfg = (panel: BoardPanelCfg): BoardPanelCfg => {
     delete (out as Partial<BoardPanelCfg>).excludedTagsMatch;
   }
 
+  // Drop an absent/`All` issue-state filter so it doesn't read as an active
+  // constraint downstream.
+  if (out.issueState == null || out.issueState === BoardPanelCfgIssueState.All) {
+    delete (out as Partial<BoardPanelCfg>).issueState;
+  }
+  // Normalize the issue-status filter to a non-empty string array or absent.
+  const cleanedStatuses = _cleanIssueStatuses(out.issueStatuses);
+  if (cleanedStatuses) {
+    out.issueStatuses = cleanedStatuses;
+  } else {
+    delete (out as Partial<BoardPanelCfg>).issueStatuses;
+  }
+
   return out;
+};
+
+/** Keep only non-empty strings; return `undefined` when nothing remains. */
+const _cleanIssueStatuses = (raw: unknown): string[] | undefined => {
+  if (!Array.isArray(raw)) {
+    return undefined;
+  }
+  const cleaned = raw.filter((s): s is string => typeof s === 'string' && s.length > 0);
+  return cleaned.length ? cleaned : undefined;
 };
 
 /**
@@ -175,6 +198,47 @@ export const rewriteTagIdsForPanel = (
  * from project state, not from the task itself. It is only consulted when
  * `panelCfg.backlogState` requests backlog filtering.
  */
+/**
+ * Match a task against a panel's linked-issue filters (state + custom
+ * status). Reads the snapshots persisted on the task (`issueState` /
+ * `issueStatus`) rather than the live issue, so it stays synchronous and
+ * offline. A task with no linked-issue snapshot never matches an active
+ * Open/Closed or status filter.
+ */
+const doesTaskMatchIssueFilters = (
+  task: Readonly<TaskCopy>,
+  panelCfg: Pick<BoardPanelCfg, 'issueState' | 'issueStatuses'>,
+): boolean => {
+  if (
+    panelCfg.issueState === BoardPanelCfgIssueState.Open ||
+    panelCfg.issueState === BoardPanelCfgIssueState.Closed
+  ) {
+    // Only tasks linked to an issue carry a state.
+    const isIssueTask = !!task.issueId || task.issueState !== undefined;
+    if (!isIssueTask) {
+      return false;
+    }
+    // GitLab reports state as both "open" (REST) and "opened" (GraphQL), and
+    // both spellings can end up stored in the snapshot — only "closed" is
+    // meaningful, so treat everything else as open. Fall back to the task's
+    // done state when no snapshot has synced yet (import maps
+    // `isDone = state === 'closed'`).
+    const isClosed =
+      task.issueState !== undefined ? task.issueState === 'closed' : !!task.isDone;
+    const wantClosed = panelCfg.issueState === BoardPanelCfgIssueState.Closed;
+    if (isClosed !== wantClosed) {
+      return false;
+    }
+  }
+  if (
+    panelCfg.issueStatuses?.length &&
+    !(task.issueStatus && panelCfg.issueStatuses.includes(task.issueStatus))
+  ) {
+    return false;
+  }
+  return true;
+};
+
 export const doesTaskMatchPanel = (
   task: Readonly<TaskCopy>,
   panelCfg: Pick<
@@ -188,6 +252,8 @@ export const doesTaskMatchPanel = (
     | 'projectIds'
     | 'scheduledState'
     | 'backlogState'
+    | 'issueState'
+    | 'issueStatuses'
   >,
   isInBacklog: (task: Readonly<TaskCopy>) => boolean,
 ): boolean => {
@@ -252,6 +318,10 @@ export const doesTaskMatchPanel = (
     panelCfg.backlogState === BoardPanelCfgTaskTypeFilter.NoBacklog &&
     isInBacklog(task)
   ) {
+    return false;
+  }
+
+  if (!doesTaskMatchIssueFilters(task, panelCfg)) {
     return false;
   }
 

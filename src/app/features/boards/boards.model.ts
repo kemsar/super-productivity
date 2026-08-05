@@ -16,6 +16,12 @@ export enum BoardPanelCfgTaskTypeFilter {
   OnlyBacklog = 3,
 }
 
+export enum BoardPanelCfgIssueState {
+  All = 1,
+  Open = 2,
+  Closed = 3,
+}
+
 export type BoardSortField = 'dueDate' | 'created' | 'title' | 'timeEstimate';
 export type BoardMatchMode = 'all' | 'any';
 
@@ -42,6 +48,14 @@ export interface BoardSrcCfg {
   sortByDue?: 'off' | 'asc' | 'desc';
   // optional since newly added
   backlogState?: BoardPanelCfgTaskTypeFilter;
+  // Filter by a linked issue's lifecycle state (currently GitLab open/closed).
+  // Absent/All = don't filter by state. Matches against `task.issueState`;
+  // tasks without a linked issue never match Open/Closed.
+  issueState?: BoardPanelCfgIssueState;
+  // Filter by a linked issue's customizable work-item status name (GitLab).
+  // Absent/empty = don't filter by status. Matches ANY of the listed names
+  // against `task.issueStatus`.
+  issueStatuses?: string[];
 }
 
 export interface BoarFieldsToRemove {

@@ -16,12 +16,20 @@ export const GITLAB_ISSUE_CONTENT_CONFIG: IssueContentConfig<GitlabIssue> = {
       getLink: (issue: GitlabIssue) => issue.html_url,
     },
     {
-      label: T.F.ISSUE.ISSUE_CONTENT.STATUS,
-      value: 'state',
+      // GitLab's issue lifecycle "State" (opened/closed) — renamed from
+      // "Status" to match GitLab's current terminology, where "Status" now
+      // refers to the customizable work-item status widget (see below).
+      label: T.F.GITLAB.ISSUE_CONTENT.STATE,
       type: IssueFieldType.TEXT,
+      // `state` is stored in REST vocabulary ('open'|'closed'); display it in
+      // GitLab's UI wording ('opened'|'closed').
+      value: (issue: GitlabIssue) => (issue.state === 'closed' ? 'closed' : 'opened'),
     },
     {
-      label: T.F.GITLAB.ISSUE_CONTENT.WORK_ITEM_STATUS,
+      // The customizable work-item "Status" (e.g. "New request", "In
+      // progress"), fetched via the GraphQL status widget. Only present on
+      // tiers/instances that expose it.
+      label: T.F.GITLAB.ISSUE_CONTENT.STATUS,
       type: IssueFieldType.TEXT,
       value: (issue: GitlabIssue) => issue.status?.name,
       isVisible: (issue: GitlabIssue) => !!issue.status?.name,

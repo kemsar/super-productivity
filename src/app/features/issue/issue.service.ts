@@ -156,6 +156,30 @@ export class IssueService {
     );
   }
 
+  /**
+   * Re-fetch a task's issue and push it to any open view subscribed via
+   * `getById$` (e.g. the task detail panel), so a self-initiated change (board
+   * drag-to-set) shows up without reopening. No-op if nothing is observing —
+   * so we don't spend a request when no panel is open. Unlike
+   * `refreshIssueTask`, this does NOT touch the task (no `issueWasUpdated`
+   * flag) since the user made the change themselves.
+   */
+  async reloadIssueDataForOpenViews(task: Task): Promise<void> {
+    const { issueId, issueType, issueProviderId } = task;
+    if (!issueId || !issueType || !issueProviderId) {
+      return;
+    }
+    const subject = this.ISSUE_REFRESH_MAP[issueProviderId]?.[issueId];
+    if (!subject) {
+      return;
+    }
+    const service = this._getService(issueType);
+    const issue = await service?.getById(issueId, issueProviderId);
+    if (issue) {
+      subject.next(issue);
+    }
+  }
+
   searchIssues(
     searchTerm: string,
     issueProviderId: string,

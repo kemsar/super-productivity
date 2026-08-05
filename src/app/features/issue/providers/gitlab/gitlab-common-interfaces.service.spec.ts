@@ -110,6 +110,9 @@ const makeTask = (issueLastUpdated: number): Task =>
     issueType: 'GITLAB',
     issueLastUpdated,
     issueWasUpdated: false,
+    // Already-backfilled snapshot (matches makeIssue's state) so the board
+    // snapshot backfill doesn't fire in the general refresh specs.
+    issueState: 'open',
   });
 
 describe('GitlabCommonInterfacesService', () => {
@@ -289,6 +292,26 @@ describe('GitlabCommonInterfacesService', () => {
     });
   });
 
+  describe('getAddTaskData (issue state/status snapshots)', () => {
+    it('persists issue state and custom work-item status onto the task', () => {
+      const issue: GitlabIssue = {
+        ...makeIssue(BASE_UPDATED_AT),
+        state: 'closed',
+        status: { name: 'In progress', category: 'IN_PROGRESS' },
+      };
+      const out = service.getAddTaskData(issue);
+      expect(out.issueState).toBe('closed');
+      expect(out.issueStatus).toBe('In progress');
+      expect(out.isDone).toBe(true);
+    });
+
+    it('leaves issueStatus undefined when the status widget is absent', () => {
+      const out = service.getAddTaskData(makeIssue(BASE_UPDATED_AT));
+      expect(out.issueState).toBe('open');
+      expect(out.issueStatus).toBeUndefined();
+    });
+  });
+
   describe('getFreshDataForIssueTask', () => {
     it('does not flag an update when only a GitLab comment timestamp is later than issue.updated_at', async () => {
       const issueLastUpdated = new Date(BASE_UPDATED_AT).getTime();
@@ -310,6 +333,42 @@ describe('GitlabCommonInterfacesService', () => {
       const result = await service.getFreshDataForIssueTask(makeTask(issueLastUpdated));
 
       expect(result).toBeNull();
+    });
+
+    it('backfills the state/status snapshot for a pre-existing task without flagging an update', async () => {
+      const issueLastUpdated = new Date(BASE_UPDATED_AT).getTime();
+      // Simulate a task imported before the snapshot existed.
+      const task = {
+        ...makeTask(issueLastUpdated),
+        issueState: undefined,
+        issueStatus: undefined,
+      } as Task;
+      gitlabApiService.getById$.and.returnValue(
+        of({
+          ...makeIssue(BASE_UPDATED_AT),
+          state: 'closed',
+          status: { name: 'In progress', category: 'IN_PROGRESS' },
+        } as GitlabIssue),
+      );
+
+      const result = await service.getFreshDataForIssueTask(task);
+
+      expect(result?.taskChanges.issueState).toBe('closed');
+      expect(result?.taskChanges.issueStatus).toBe('In progress');
+      // A backfill must not masquerade as a remote content update.
+      expect(result?.taskChanges.issueWasUpdated).toBeUndefined();
+    });
+
+    it('does not re-fetch to backfill once the snapshot is present and unchanged', async () => {
+      const issueLastUpdated = new Date(BASE_UPDATED_AT).getTime();
+      gitlabApiService.getById$.and.returnValue(of(makeIssue(BASE_UPDATED_AT)));
+
+      // makeTask already carries issueState: 'open', matching the issue.
+      const result = await service.getFreshDataForIssueTask(makeTask(issueLastUpdated));
+
+      expect(result).toBeNull();
+      // Only the base fetch — no extra backfill round-trip.
+      expect(gitlabApiService.getById$).toHaveBeenCalledTimes(1);
     });
 
     it('flags a new GitLab comment as an update when issue.updated_at is bumped', async () => {
@@ -363,9 +422,62 @@ describe('GitlabCommonInterfacesService', () => {
       expect(result?.taskChanges.issueWasUpdated).toBe(true);
     });
 
-    it('skips GraphQL entirely when isAvailable is false', async () => {
+    it('prefers GraphQL for a group/all-assigned provider even when isAvailable is false', async () => {
+      // A group/all-assigned provider has isAvailable=false (null cfg.project),
+      // but single-issue GraphQL resolves the project from the issue id's own
+      // path — and it's the only path that returns the custom Status widget.
       gitlabGraphqlApiService.isAvailable.and.returnValue(false);
-      gitlabApiService.getById$.and.returnValue(of(makeIssue(BASE_UPDATED_AT)));
+      issueProviderService.getCfgOnce$.and.returnValue(
+        of({ ...BASE_CFG, project: null, group: 'grp/sub', sourceMode: 'group' } as any),
+      );
+      gitlabGraphqlApiService.getById$.and.returnValue(of(makeIssue(NEWER_UPDATED_AT)));
+
+      const result = await service.getFreshDataForIssueTask(
+        makeTask(new Date(BASE_UPDATED_AT).getTime()),
+      );
+
+      expect(gitlabGraphqlApiService.getById$).toHaveBeenCalled();
+      expect(gitlabApiService.getById$).not.toHaveBeenCalled();
+      expect(result?.taskChanges.issueWasUpdated).toBe(true);
+    });
+
+    it('keeps project-mode providers on REST when isAvailable is false', async () => {
+      // BASE_CFG has cfg.project set — the group-mode extension must NOT apply,
+      // so a disabled GraphQL endpoint still degrades to REST as before.
+      gitlabGraphqlApiService.isAvailable.and.returnValue(false);
+      gitlabApiService.getById$.and.returnValue(of(makeIssue(NEWER_UPDATED_AT)));
+
+      await service.getFreshDataForIssueTask(
+        makeTask(new Date(BASE_UPDATED_AT).getTime()),
+      );
+
+      expect(gitlabGraphqlApiService.getById$).not.toHaveBeenCalled();
+      expect(gitlabApiService.getById$).toHaveBeenCalled();
+    });
+
+    it('uses REST for a group provider when the issue id project is numeric', async () => {
+      gitlabGraphqlApiService.isAvailable.and.returnValue(false);
+      issueProviderService.getCfgOnce$.and.returnValue(
+        of({ ...BASE_CFG, project: null, sourceMode: 'group' } as any),
+      );
+      gitlabApiService.getById$.and.returnValue(of(makeIssue(NEWER_UPDATED_AT)));
+      const task = {
+        ...makeTask(new Date(BASE_UPDATED_AT).getTime()),
+        issueId: '12345#42',
+      } as Task;
+
+      await service.getFreshDataForIssueTask(task);
+
+      expect(gitlabGraphqlApiService.getById$).not.toHaveBeenCalled();
+      expect(gitlabApiService.getById$).toHaveBeenCalled();
+    });
+
+    it('uses REST for a group provider that has a raw filter', async () => {
+      gitlabGraphqlApiService.isAvailable.and.returnValue(false);
+      issueProviderService.getCfgOnce$.and.returnValue(
+        of({ ...BASE_CFG, project: null, filter: 'labels=bug' } as any),
+      );
+      gitlabApiService.getById$.and.returnValue(of(makeIssue(NEWER_UPDATED_AT)));
 
       await service.getFreshDataForIssueTask(
         makeTask(new Date(BASE_UPDATED_AT).getTime()),

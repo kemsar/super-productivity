@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { firstValueFrom, from, Observable } from 'rxjs';
 import { catchError, map, mergeMap, tap, toArray } from 'rxjs/operators';
-import { Task } from 'src/app/features/tasks/task.model';
+import { Task, TaskCopy } from 'src/app/features/tasks/task.model';
 import { BaseIssueProviderService } from '../../base/base-issue-provider.service';
 import { IssueData, SearchResultItem } from '../../issue.model';
 import { IssueLog } from '../../../../core/log';
@@ -121,6 +121,12 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       issueId: issue.id,
       isDone: issue.state === 'closed',
       dueDay: issue.due_date || undefined,
+      // Persist state + custom work-item status snapshots so board columns can
+      // filter by them synchronously/offline (issues aren't cached in the
+      // store). Flows to both import and poll-refresh via the base service,
+      // which spreads getAddTaskData(issue) into taskChanges.
+      issueState: issue.state,
+      issueStatus: issue.status?.name,
     };
   }
 
@@ -217,13 +223,20 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       base.taskChanges = { ...base.taskChanges, lastUserNoteAt: filtered };
     }
 
-    if (!cfg.isSyncLabelsAsTags) {
+    const labelSyncOn = !!cfg.isSyncLabelsAsTags;
+    // We only need to fetch the issue (beyond what the base already did) when
+    // labels are synced OR the state/status board snapshot is missing and
+    // needs a one-time backfill. Once `issueState` is set, the base
+    // (updated_at) path keeps it fresh — so label-sync-off, already-backfilled
+    // tasks never pay an extra request here.
+    const needsSnapshotBackfill = task.issueState === undefined;
+    if (!labelSyncOn && !needsSnapshotBackfill) {
       return base;
     }
 
     // The base method returns null when the remote issue's `updated_at`
-    // hasn't advanced. Labels can change without updated_at bumping on some
-    // GitLab versions, so fetch the issue directly when base bailed out.
+    // hasn't advanced. Labels/status can change (or a snapshot may be missing)
+    // without updated_at bumping, so fetch the issue directly when base bailed.
     const issue: GitlabIssue = ((base?.issue as GitlabIssue) ??
       ((await firstValueFrom(
         this._apiGetById$(task.issueId!, cfg),
@@ -232,32 +245,58 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       return base;
     }
 
-    const remoteLabels = [...(issue.labels ?? [])].sort((a, b) => a.localeCompare(b));
-    const lastLabels = this._getLastSyncedLabels(task);
-    const labelsUnchanged =
-      remoteLabels.length === lastLabels.length &&
-      remoteLabels.every((l, i) => l === lastLabels[i]);
+    // --- Label sync (issue #14) ---
+    let labelPortion: Partial<Task> = {};
+    let labelsUnchanged = true;
+    if (labelSyncOn) {
+      const remoteLabels = [...(issue.labels ?? [])].sort((a, b) => a.localeCompare(b));
+      const lastLabels = this._getLastSyncedLabels(task);
+      labelsUnchanged =
+        remoteLabels.length === lastLabels.length &&
+        remoteLabels.every((l, i) => l === lastLabels[i]);
+      labelPortion = {
+        tagIds: this._mergeLabelsIntoExistingTagIds(
+          task.tagIds ?? [],
+          lastLabels,
+          remoteLabels,
+        ),
+        issueLastSyncedValues: {
+          ...task.issueLastSyncedValues,
+          labels: remoteLabels,
+        },
+      };
+    }
 
-    // Nothing changed on either the base fields OR the labels — no-op so we
-    // don't spam an updateTask that would trigger the write-side effect for
-    // no reason.
-    if (!base && labelsUnchanged) {
+    // --- Board state/status snapshot (issue #19) ---
+    // Stamp/refresh the snapshot when it drifts from the remote issue. This
+    // backfills pre-existing tasks (undefined snapshot) on the next poll and
+    // catches status changes that don't bump updated_at.
+    const snapshotPortion: Partial<TaskCopy> = {};
+    if (issue.state !== task.issueState) {
+      snapshotPortion.issueState = issue.state;
+    }
+    const remoteStatusName = issue.status?.name;
+    if (remoteStatusName !== task.issueStatus) {
+      snapshotPortion.issueStatus = remoteStatusName;
+    }
+
+    const hasLabelUpdate = labelSyncOn && !labelsUnchanged;
+    const hasSnapshotUpdate = Object.keys(snapshotPortion).length > 0;
+
+    // Nothing to write beyond what the base already carried — no-op so we
+    // don't spam an updateTask (and, for labels, the write-side effect).
+    if (!base && !hasLabelUpdate && !hasSnapshotUpdate) {
       return null;
     }
 
-    const nextTagIds = this._mergeLabelsIntoExistingTagIds(
-      task.tagIds ?? [],
-      lastLabels,
-      remoteLabels,
-    );
-
+    // A pure snapshot backfill must NOT set issueWasUpdated — otherwise every
+    // pre-existing task would show an "updated" badge on the first poll after
+    // upgrade. Only a real remote label change sets it (matching prior label
+    // behavior); base updates already carry their own flag.
     const changes: Partial<Task> = {
-      ...(base?.taskChanges ?? { issueWasUpdated: true }),
-      tagIds: nextTagIds,
-      issueLastSyncedValues: {
-        ...task.issueLastSyncedValues,
-        labels: remoteLabels,
-      },
+      ...(base?.taskChanges ?? (hasLabelUpdate ? { issueWasUpdated: true } : {})),
+      ...labelPortion,
+      ...snapshotPortion,
     };
 
     return {
@@ -344,12 +383,37 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     cfg: GitlabCfg,
   ): Observable<IssueData | null> {
     const idStr = id.toString();
-    if (this._gitlabGraphqlApiService.isAvailable(cfg)) {
+    if (this._canGraphqlFetchById(cfg, idStr)) {
       return this._gitlabGraphqlApiService
         .getById$(idStr, cfg)
         .pipe(catchError(() => this._gitlabApiService.getById$(idStr, cfg)));
     }
     return this._gitlabApiService.getById$(idStr, cfg);
+  }
+
+  /**
+   * Whether a single issue can be fetched via GraphQL. `isAvailable(cfg)`
+   * requires `cfg.project`, so it's false for group/all-assigned providers —
+   * but single-issue GraphQL resolves the project from the issue id's own
+   * path, so it works there too (and is the ONLY path that returns the custom
+   * work-item Status widget). Prefer it whenever the id carries a resolvable
+   * (non-numeric) path; raw-filter and numeric-id setups stay on REST. REST is
+   * always the catchError fallback, so a wrong guess degrades gracefully.
+   */
+  private _canGraphqlFetchById(cfg: GitlabCfg, idStr: string): boolean {
+    if (this._gitlabGraphqlApiService.isAvailable(cfg)) {
+      return true;
+    }
+    // Project-mode and raw-filter providers keep their existing routing (REST
+    // when isAvailable is false). Only extend to group/all-assigned providers:
+    // they have no `cfg.project` (so isAvailable is false), but single-issue
+    // GraphQL resolves the project from the issue id's own path — the only way
+    // to read the custom work-item Status widget for those setups.
+    if (cfg.project || cfg.filter) {
+      return false;
+    }
+    const projectPath = idStr.split('#')[0];
+    return !!projectPath && !/^\d+$/.test(projectPath);
   }
 
   protected _apiSearchIssues$(

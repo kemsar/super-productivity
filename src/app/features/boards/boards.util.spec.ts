@@ -6,6 +6,7 @@ import {
 } from './boards.util';
 import {
   BoardPanelCfg,
+  BoardPanelCfgIssueState,
   BoardPanelCfgScheduledState,
   BoardPanelCfgTaskDoneState,
   BoardPanelCfgTaskTypeFilter,
@@ -126,6 +127,40 @@ describe('sanitizePanelCfg', () => {
     const once = sanitizePanelCfg({ ...basePanel, sortByDue: 'asc' } as any);
     const twice = sanitizePanelCfg(once);
     expect(twice).toEqual(once);
+  });
+
+  it('drops an absent/All issueState filter', () => {
+    expect('issueState' in sanitizePanelCfg({ ...basePanel } as any)).toBe(false);
+    const out = sanitizePanelCfg({
+      ...basePanel,
+      issueState: BoardPanelCfgIssueState.All,
+    } as any);
+    expect('issueState' in out).toBe(false);
+  });
+
+  it('keeps an active issueState filter', () => {
+    const out = sanitizePanelCfg({
+      ...basePanel,
+      issueState: BoardPanelCfgIssueState.Open,
+    } as any);
+    expect(out.issueState).toBe(BoardPanelCfgIssueState.Open);
+  });
+
+  it('normalizes issueStatuses: keeps non-empty strings, drops the rest', () => {
+    const out = sanitizePanelCfg({
+      ...basePanel,
+      issueStatuses: ['In progress', '', 'Done', 123 as any, null as any],
+    } as any);
+    expect(out.issueStatuses).toEqual(['In progress', 'Done']);
+  });
+
+  it('drops issueStatuses when empty or non-array', () => {
+    expect(
+      'issueStatuses' in sanitizePanelCfg({ ...basePanel, issueStatuses: [] } as any),
+    ).toBe(false);
+    expect(
+      'issueStatuses' in sanitizePanelCfg({ ...basePanel, issueStatuses: 'x' } as any),
+    ).toBe(false);
   });
 });
 
@@ -523,6 +558,83 @@ describe('doesTaskMatchPanel', () => {
       const panel = mkPanel({ backlogState: BoardPanelCfgTaskTypeFilter.NoBacklog });
       expect(match(mkTask({ id: 'regular' }), panel, isInBacklog)).toBe(true);
       expect(match(mkTask({ id: 'backlogged' }), panel, isInBacklog)).toBe(false);
+    });
+  });
+
+  describe('issueState', () => {
+    it('All (or absent): does not filter by state', () => {
+      expect(match(mkTask({ issueState: 'closed' }), mkPanel())).toBe(true);
+      expect(
+        match(
+          mkTask({ issueState: 'open' }),
+          mkPanel({ issueState: BoardPanelCfgIssueState.All }),
+        ),
+      ).toBe(true);
+      // a task with no linked issue still matches when the filter is inactive
+      expect(match(mkTask(), mkPanel())).toBe(true);
+    });
+
+    it('Open: requires issueState "open"', () => {
+      const panel = mkPanel({ issueState: BoardPanelCfgIssueState.Open });
+      expect(match(mkTask({ issueState: 'open' }), panel)).toBe(true);
+      expect(match(mkTask({ issueState: 'closed' }), panel)).toBe(false);
+      // non-issue task never matches an active state filter
+      expect(match(mkTask(), panel)).toBe(false);
+    });
+
+    it('Closed: requires issueState "closed"', () => {
+      const panel = mkPanel({ issueState: BoardPanelCfgIssueState.Closed });
+      expect(match(mkTask({ issueState: 'closed' }), panel)).toBe(true);
+      expect(match(mkTask({ issueState: 'open' }), panel)).toBe(false);
+      expect(match(mkTask(), panel)).toBe(false);
+    });
+
+    it('falls back to isDone for issue tasks that predate the snapshot', () => {
+      const openPanel = mkPanel({ issueState: BoardPanelCfgIssueState.Open });
+      const closedPanel = mkPanel({ issueState: BoardPanelCfgIssueState.Closed });
+      expect(match(mkTask({ issueId: 'g/p#1', isDone: false }), openPanel)).toBe(true);
+      expect(match(mkTask({ issueId: 'g/p#1', isDone: true }), openPanel)).toBe(false);
+      expect(match(mkTask({ issueId: 'g/p#1', isDone: true }), closedPanel)).toBe(true);
+      // a non-issue task (no issueId) has no fallback and never matches
+      expect(match(mkTask({ isDone: true }), closedPanel)).toBe(false);
+    });
+
+    it('prefers the issueState snapshot over isDone when both are present', () => {
+      const openPanel = mkPanel({ issueState: BoardPanelCfgIssueState.Open });
+      expect(
+        match(mkTask({ issueId: 'g/p#1', isDone: true, issueState: 'open' }), openPanel),
+      ).toBe(true);
+    });
+
+    it('treats "opened" (GraphQL vocab) the same as "open"', () => {
+      const openPanel = mkPanel({ issueState: BoardPanelCfgIssueState.Open });
+      const closedPanel = mkPanel({ issueState: BoardPanelCfgIssueState.Closed });
+      expect(match(mkTask({ issueId: 'g/p#1', issueState: 'opened' }), openPanel)).toBe(
+        true,
+      );
+      expect(match(mkTask({ issueId: 'g/p#1', issueState: 'opened' }), closedPanel)).toBe(
+        false,
+      );
+      // 'locked' (another non-closed GitLab state) also counts as open
+      expect(match(mkTask({ issueId: 'g/p#1', issueState: 'locked' }), openPanel)).toBe(
+        true,
+      );
+    });
+  });
+
+  describe('issueStatuses', () => {
+    it('empty/absent: does not filter by status', () => {
+      expect(match(mkTask(), mkPanel({ issueStatuses: [] }))).toBe(true);
+      expect(match(mkTask({ issueStatus: 'In progress' }), mkPanel())).toBe(true);
+    });
+
+    it('matches ANY of the listed statuses', () => {
+      const panel = mkPanel({ issueStatuses: ['In progress', 'New request'] });
+      expect(match(mkTask({ issueStatus: 'In progress' }), panel)).toBe(true);
+      expect(match(mkTask({ issueStatus: 'New request' }), panel)).toBe(true);
+      expect(match(mkTask({ issueStatus: 'Done' }), panel)).toBe(false);
+      // non-issue task never matches an active status filter
+      expect(match(mkTask(), panel)).toBe(false);
     });
   });
 
