@@ -274,6 +274,10 @@ describe('AddTaskBarComponent', () => {
   });
 
   describe('highlightSegments', () => {
+    // Search mode now defaults ON when localStorage is empty (#9135 affordance),
+    // but short-syntax highlighting only renders in create mode — opt into it.
+    beforeEach(() => component.isSearchMode.set(false));
+
     it('splits the input by the ranges parsed from that exact text', () => {
       component.stateService.updateInputTxt('Buy milk #shop');
       component.stateService.updateSyntaxHighlight({
