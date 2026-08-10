@@ -305,6 +305,20 @@
       // can re-parse from the same source (issue #19).
       (function () {
         const REST = 'http://127.0.0.1:3876';
+        // The local REST API requires a bearer token on every request (#9155).
+        // The main process injects it via this window's query string; attach it
+        // to every REST fetch so the dropdowns + task-create authenticate.
+        const REST_TOKEN = new URLSearchParams(location.search).get('token') || '';
+        const _origFetch = window.fetch.bind(window);
+        window.fetch = (url, opts) => {
+          const o = opts || {};
+          if (REST_TOKEN && String(url).indexOf(REST) === 0) {
+            const headers = new Headers(o.headers || {});
+            headers.set('Authorization', 'Bearer ' + REST_TOKEN);
+            return _origFetch(url, { ...o, headers });
+          }
+          return _origFetch(url, o);
+        };
         const titleEl = document.getElementById('title');
         const descEl = document.getElementById('description');
         const descActions = document.getElementById('desc-actions');

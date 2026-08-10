@@ -481,6 +481,15 @@ const getForcedDevToken = (): string => {
   return generatedForcedDevToken;
 };
 
+/**
+ * The access token main-process callers must present to the local REST API
+ * (matches what the server validates). Used by the quick-add overlay window,
+ * which is a foreign file:// page that reaches SP over the REST bridge and so
+ * needs the same bearer token every request now requires (#9155).
+ */
+export const getLocalRestApiToken = (): string =>
+  isForceEnabledForDev() ? getForcedDevToken() : ensureToken();
+
 const handleHttpRequest = async (
   req: IncomingMessage,
   res: ServerResponse,

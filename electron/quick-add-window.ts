@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { info } from 'electron-log/main';
 import { IS_MAC } from './common.const';
 import { assertSecureWebPreferences } from './web-preferences-guard';
+import { getLocalRestApiToken } from './local-rest-api';
 
 /**
  * Global-hotkey quick-add overlay (issue #25). Opens a small borderless
@@ -121,9 +122,16 @@ const _createWindow = (): BrowserWindow => {
   // Load the self-contained overlay HTML. Sits next to this file at the
   // electron/ root so electron-builder's `electron/**/*` glob picks it up
   // for the packaged app (same shape task-widget.html uses).
-  win.loadFile(join(__dirname, 'quick-add.html')).catch((err) => {
-    info('[quick-add-window] loadFile failed', err);
-  });
+  // The overlay is a foreign file:// page; the local REST API now requires a
+  // bearer token on every request (#9155). Pass it via the window's query
+  // string so the overlay can authenticate its fetches.
+  win
+    .loadFile(join(__dirname, 'quick-add.html'), {
+      query: { token: getLocalRestApiToken() },
+    })
+    .catch((err) => {
+      info('[quick-add-window] loadFile failed', err);
+    });
 
   win.once('ready-to-show', () => {
     if (!quickAddWin || quickAddWin.isDestroyed()) return;
