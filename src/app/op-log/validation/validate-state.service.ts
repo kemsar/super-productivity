@@ -341,33 +341,6 @@ export class ValidateStateService {
     }
 
     // User confirmed - proceed with repair
-    const repairResult = await this._runRepair(state, validationResult);
-    if (!repairResult.isValid && repairResult.wasRepaired) {
-      // Repair produced output but re-validation still failed — notify user with
-      // an alert dialog since they explicitly opted in via confirmDialog.
-      alertDialog(
-        'Repair attempted but failed to fully fix data issues. ' +
-          'Please try restoring from a backup or contact support.',
-      );
-    }
-    return repairResult;
-  }
-
-  /**
-   * Runs `dataRepair()` on the given state and revalidates the output.
-   * Assumes the caller has already checked `isDataRepairPossible()`.
-   *
-   * NOTE: The fork's #9 `validateAndRepairWithoutConfirm` non-interactive
-   * variant was removed on the upstream merge — upstream's snapshot/recovery
-   * services now heal via `loadAllData` reducer defaults after a
-   * validation failure (#9138, #9124), so the wrapper had no live callers.
-   * `_runRepair` stays as a private helper for future non-interactive
-   * paths, matching the extracted shape the fork's #9 introduced.
-   */
-  private async _runRepair(
-    state: Record<string, unknown>,
-    validationResult: StateValidationResult,
-  ): Promise<ValidateAndRepairResult> {
     try {
       const typiaErrors = validationResult.typiaErrors as IValidation.IError[];
       const { dataRepair } = await import('./data-repair');
@@ -378,18 +351,15 @@ export class ValidateStateService {
       // Validate the repaired state to confirm it's now valid
       const revalidationResult = await this.validateState(repairedState);
       if (!revalidationResult.isValid) {
-        // Detailed error metadata helps diagnose which validator ultimately
-        // rejected the repaired state. The `_runRepair` refactor is called
-        // from both interactive and non-interactive paths, so no dialog is
-        // fired here — non-interactive callers surface failure via the
-        // session-validation latch + non-blocking error snack (upstream
-        // #9026); interactive callers propagate the returned error to their
-        // own alert (see validateAndRepair). Fork's #9 extracted this path
-        // to share the code between the two entry points.
-        OpLog.err('[ValidateStateService] State still invalid after repair', {
-          typiaErrorCount: revalidationResult.typiaErrors.length,
-          crossModelError: revalidationResult.crossModelError,
-        });
+        OpLog.err('[ValidateStateService] State still invalid after repair');
+        // Interactive callers only; automatic callers surface failure via the
+        // session-validation latch + non-blocking error snack (#9026).
+        if (interactive) {
+          alertDialog(
+            'Repair attempted but failed to fully fix data issues. ' +
+              'Please try restoring from a backup or contact support.',
+          );
+        }
         return {
           isValid: false,
           wasRepaired: true,
