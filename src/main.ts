@@ -66,6 +66,7 @@ import { META_REDUCERS } from './app/root-store/meta/meta-reducer-registry';
 import { setOperationCaptureService } from './app/root-store/meta/task-shared-meta-reducers';
 import { OperationCaptureService } from './app/op-log/capture/operation-capture.service';
 import { ConflictJournalService } from './app/op-log/sync/conflict-journal.service';
+import { LocalDraftService } from './app/core/draft/local-draft.service';
 import { EncryptionPasswordDialogOpenerService } from './app/imex/sync/encryption-password-dialog-opener.service';
 import { DataInitService } from './app/core/data-init/data-init.service';
 import { EffectsModule } from '@ngrx/effects';
@@ -95,6 +96,7 @@ import { CustomDateAdapter } from './app/core/date-time-format/custom-date-adapt
 import { TranslateMatDatepickerIntl } from './app/core/date-time-format/translate-mat-datepicker-intl';
 import { suspendAudioContext, unlockAudioContext } from './app/util/audio-context';
 import { NetworkRetryInterceptorService } from './app/core/http/network-retry-interceptor.service';
+import { routeCapacitorAppUrl } from './app/core/app-url-open-router';
 
 if (environment.production || environment.stage) {
   enableProdMode();
@@ -308,9 +310,9 @@ bootstrapApplication(AppComponent, {
       deps: [PluginOAuthRedirectHandler],
       multi: true,
     },
-    // Ensure OAuthCallbackHandlerService is instantiated at bootstrap on native platforms.
-    // Its constructor registers Capacitor's appUrlOpen listener that bridges
-    // both Dropbox and plugin OAuth redirect callbacks.
+    // Ensure OAuthCallbackHandlerService is instantiated at bootstrap on native
+    // platforms. Its constructor subscribes to the OAuth URLs routed from the
+    // single appUrlOpen listener below; it does not register a listener itself.
     {
       provide: APP_INITIALIZER,
       useFactory: (_handler: OAuthCallbackHandlerService) => {
@@ -331,6 +333,19 @@ bootstrapApplication(AppComponent, {
         };
       },
       deps: [ConflictJournalService],
+      multi: true,
+    },
+    // Remove crash-leftover note drafts past their retention window on app
+    // start, same rationale as the conflict journal above. Synchronous
+    // localStorage sweep over a handful of keys; swallows its own errors.
+    {
+      provide: APP_INITIALIZER,
+      useFactory: (localDraft: LocalDraftService) => {
+        return () => {
+          localDraft.pruneOnStart();
+        };
+      },
+      deps: [LocalDraftService],
       multi: true,
     },
     // Note: ImmediateUploadService now initializes itself in constructor
@@ -552,11 +567,28 @@ if (IS_IOS_NATIVE) {
       BackgroundTask.finish({ taskId });
     });
   });
+}
 
-  // Handle app URL open (for OAuth callbacks, deep links, etc.)
+// Handle app URL open (for OAuth callbacks, deep links, etc.) on iOS *and*
+// Android: Android declares no task-action host, but its VIEW intent filters
+// do carry plugin OAuth callbacks, so gating this on iOS alone leaves that
+// callback with no listener at all.
+//
+// This must be the ONLY `appUrlOpen` listener in the app. `@capacitor/app`
+// emits a cold-start URL with `retainUntilConsumed: true`, and Capacitor
+// drains and clears those retained arguments when the *first* listener for
+// the event is added (`CAPPlugin.m`, `addEventListener` →
+// `sendRetainedArgumentsForEvent`). A second listener added later never
+// receives it, so registering one here and another in
+// OAuthCallbackHandlerService meant whichever came second silently lost
+// every cold-launch URL. Instead, route the single event to both consumers.
+if (IS_NATIVE_PLATFORM) {
   CapacitorApp.addListener('appUrlOpen', (event) => {
-    Log.log('iOS app URL open', event.url);
-    // Handle OAuth callbacks or deep links here
-    // The URL will be passed to the app when opened via custom scheme
+    const isTaskAction = routeCapacitorAppUrl(event.url);
+    // Never log the raw URL — it carries the task title/notes for task
+    // actions and an auth code for OAuth callbacks, and log history is
+    // exportable in bug reports. Log only that the event fired and how it
+    // was routed.
+    Log.log('Native app URL open', { isTaskAction });
   });
 }
