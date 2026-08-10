@@ -21,6 +21,7 @@ import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-a
 import { GitlabGraphqlApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-graphql-api.service';
 import { GitlabCfg } from '../../features/issue/providers/gitlab/gitlab.model';
 import { IssueProviderService } from '../../features/issue/issue-provider.service';
+import { NavigateToTaskService } from '../../core-ui/navigate-to-task/navigate-to-task.service';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -206,6 +207,7 @@ type SimpleRouteHandler = (
 })
 export class LocalRestApiHandlerService {
   private readonly _taskService = inject(TaskService);
+  private readonly _navigateToTaskService = inject(NavigateToTaskService);
   private readonly _taskArchiveService = inject(TaskArchiveService);
   private readonly _projectService = inject(ProjectService);
   private readonly _tagService = inject(TagService);
@@ -238,6 +240,13 @@ export class LocalRestApiHandlerService {
       method: 'POST',
       path: '/task-control/current',
       handle: (rid, body) => this._handleSetCurrentTask(rid, body),
+    },
+    {
+      // Quick-add overlay: jump to an existing task in the main window
+      // (used when the overlay's "similar existing tasks" hint is clicked).
+      method: 'POST',
+      path: '/task-control/focus',
+      handle: (rid, body) => this._handleFocusTask(rid, body),
     },
     {
       method: 'GET',
@@ -406,6 +415,33 @@ export class LocalRestApiHandlerService {
 
     this._taskService.setCurrentId(taskId);
     return createSuccessResponse(requestId, 200, { currentTaskId: taskId });
+  }
+
+  private async _handleFocusTask(
+    requestId: string,
+    body: unknown,
+  ): Promise<LocalRestApiResponsePayload> {
+    if (!isRecord(body) || typeof body.taskId !== 'string') {
+      return createErrorResponse(
+        requestId,
+        400,
+        'INVALID_INPUT',
+        'Request body must be a JSON object with a string taskId',
+      );
+    }
+
+    const task = await this._getTaskById(body.taskId);
+    if (!task) {
+      return createErrorResponse(requestId, 404, 'TASK_NOT_FOUND', 'Task not found');
+    }
+
+    // Navigate the app to the task (switches work context + opens it), then
+    // bring the main OS window to the foreground — the overlay is a separate
+    // always-on-top window, so in-app navigation alone wouldn't be visible.
+    await this._navigateToTaskService.navigate(body.taskId);
+    window.ea.showOrFocus();
+
+    return createSuccessResponse(requestId, 200, { focusedTaskId: body.taskId });
   }
 
   private async _handleListTasks(

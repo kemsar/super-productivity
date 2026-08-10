@@ -159,6 +159,43 @@
         color: var(--fg-muted);
         font-style: italic;
       }
+      /* Non-blocking "you may already have this" hint: existing tasks whose
+         title matches what's being typed. Purely informational — clicking a
+         row focuses that task in the main window; Enter still creates a new
+         task as usual. */
+      .match-hint {
+        margin-top: 8px;
+        border-left: 2px solid var(--accent);
+        padding-left: 8px;
+      }
+      .match-hint.hidden {
+        display: none;
+      }
+      .match-hint .match-label {
+        font-size: 11px;
+        color: var(--fg-muted);
+        margin-bottom: 2px;
+      }
+      .match-hint .match-row {
+        padding: 4px 6px;
+        font-size: 13px;
+        cursor: pointer;
+        border-radius: 4px;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: baseline;
+      }
+      .match-hint .match-row:hover {
+        background: rgba(79, 141, 255, 0.18);
+        color: var(--accent);
+      }
+      .match-hint .match-row .match-ref {
+        color: var(--fg-muted);
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 11px;
+        white-space: nowrap;
+      }
       /* Live-parsed preview — a strip of chips populated by the parser.
          Each chip labels the token kind and shows the resolved value (or an
          unresolved warning). The whole strip hides when there's nothing to
@@ -281,6 +318,11 @@
         id="parse-preview"
         class="parse-preview"
       ></div>
+      <div
+        id="match-hint"
+        class="match-hint hidden"
+        aria-label="Existing tasks that match"
+      ></div>
       <div id="status"></div>
       <div class="keys">
         <span><kbd>Enter</kbd>save</span>
@@ -325,6 +367,7 @@
         const descSave = document.getElementById('desc-save');
         const status = document.getElementById('status');
         const preview = document.getElementById('parse-preview');
+        const matchHint = document.getElementById('match-hint');
         const autocompleteEl = document.getElementById('project-autocomplete');
         const parseText = window.SPQuickAddParser
           ? window.SPQuickAddParser.parseQuickAddText
@@ -891,6 +934,117 @@
           }
         }
 
+        // --- "similar existing tasks" hint --------------------------------
+        // Debounced search over existing SP tasks by the clean (token-stripped)
+        // title, surfaced as a passive, non-blocking hint so you notice a
+        // duplicate before creating one. Clicking a match focuses that task in
+        // the main window and dismisses the overlay; Enter still creates a new
+        // task as usual.
+        const matchCache = new Map();
+        let matchTimer = null;
+        let matchTicket = 0;
+
+        function hideMatchHint() {
+          matchHint.classList.add('hidden');
+          matchHint.innerHTML = '';
+        }
+
+        function issueRef(task) {
+          if (!task.issueId) return '';
+          const id = String(task.issueId);
+          const iid = id.includes('#') ? '#' + id.split('#').pop() : id;
+          return (task.issueType ? task.issueType + ' ' : '') + iid;
+        }
+
+        function renderMatchHint(tasks) {
+          if (!tasks || !tasks.length) {
+            hideMatchHint();
+            return;
+          }
+          matchHint.innerHTML = '';
+          const label = document.createElement('div');
+          label.className = 'match-label';
+          label.textContent =
+            (tasks.length === 1
+              ? '1 existing task matches'
+              : tasks.length + ' existing tasks match') + ' — click to open';
+          matchHint.appendChild(label);
+          for (const t of tasks) {
+            const row = document.createElement('div');
+            row.className = 'match-row';
+            const title = document.createElement('span');
+            title.className = 'match-title';
+            title.textContent = t.title;
+            row.appendChild(title);
+            const ref = issueRef(t);
+            if (ref) {
+              const refEl = document.createElement('span');
+              refEl.className = 'match-ref';
+              refEl.textContent = ref;
+              row.appendChild(refEl);
+            }
+            row.addEventListener('click', () => focusExistingTask(t.id));
+            matchHint.appendChild(row);
+          }
+          matchHint.classList.remove('hidden');
+        }
+
+        async function focusExistingTask(taskId) {
+          try {
+            const res = await fetch(REST + '/task-control/focus', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ taskId }),
+            });
+            if (!res.ok) {
+              setStatus('Could not open task (' + res.status + ')', 'error');
+              return;
+            }
+            window.close();
+          } catch (err) {
+            setStatus('Open error: ' + (err && err.message ? err.message : err), 'error');
+          }
+        }
+
+        function updateMatchHint() {
+          // Token dropdown takes precedence; never stack a hint under it.
+          if (!parseText || acState.open) {
+            hideMatchHint();
+            return;
+          }
+          const title = (parseText(currentRaw()).title || '').trim();
+          if (title.length < 3) {
+            hideMatchHint();
+            return;
+          }
+          clearTimeout(matchTimer);
+          matchTimer = setTimeout(async () => {
+            const ticket = ++matchTicket;
+            const key = title.toLowerCase();
+            let tasks = matchCache.get(key);
+            if (!tasks) {
+              try {
+                const res = await fetch(
+                  REST + '/tasks?query=' + encodeURIComponent(title),
+                );
+                if (!res.ok) {
+                  hideMatchHint();
+                  return;
+                }
+                tasks = await res.json();
+                matchCache.set(key, tasks);
+              } catch {
+                hideMatchHint();
+                return;
+              }
+            }
+            // Bail if a newer keystroke superseded this, or a token dropdown
+            // opened while the fetch was in flight.
+            if (ticket !== matchTicket || acState.open) return;
+            renderMatchHint(Array.isArray(tasks) ? tasks.slice(0, 4) : []);
+          }, 250);
+        }
+
         function setStatus(text, cls) {
           status.textContent = text;
           status.className = cls || '';
@@ -957,6 +1111,7 @@
             descActions.classList.add('hidden');
             descEl.style.height = ''; // clear inline height so next open starts at CSS min
             updatePreview();
+            hideMatchHint();
             setStatus('Saved.', '');
             setTimeout(() => {
               window.close();
@@ -978,6 +1133,8 @@
         titleEl.addEventListener('input', () => {
           updateAutocomplete();
           updatePreview();
+          // After updateAutocomplete so acState.open reflects the current token.
+          updateMatchHint();
         });
         // Selection changes (arrow-key movement without typing) also need
         // to update autocomplete visibility — moving out of the token

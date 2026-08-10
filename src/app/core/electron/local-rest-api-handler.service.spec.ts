@@ -14,6 +14,7 @@ import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-a
 import { GitlabGraphqlApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-graphql-api.service';
 import { IssueProvider } from '../../features/issue/issue.model';
 import { IssueProviderService } from '../../features/issue/issue-provider.service';
+import { NavigateToTaskService } from '../../core-ui/navigate-to-task/navigate-to-task.service';
 import { Task, TaskWithSubTasks, TaskArchive } from '../../features/tasks/task.model';
 import {
   LocalRestApiRequestPayload,
@@ -216,6 +217,12 @@ describe('LocalRestApiHandlerService', () => {
           provide: IssueProviderService,
           useValue: jasmine.createSpyObj('IssueProviderService', {
             getCfgOnce$: of(null),
+          }),
+        },
+        {
+          provide: NavigateToTaskService,
+          useValue: jasmine.createSpyObj('NavigateToTaskService', {
+            navigate: Promise.resolve(),
           }),
         },
       ],
@@ -1397,6 +1404,52 @@ describe('LocalRestApiHandlerService', () => {
       it('should return 400 for missing taskId', async () => {
         const response = await sendRequestAndWait(
           createRequest('POST', '/task-control/current', { body: {} }),
+        );
+
+        expect(response.body.ok).toBe(false);
+        expect(response.status).toBe(400);
+      });
+    });
+
+    describe('POST /task-control/focus', () => {
+      it('should navigate to the task and bring the main window forward', async () => {
+        const mockTask = createMockTask('task-1');
+        Object.defineProperty(taskServiceMock, 'getByIdOnce$', {
+          get: () => (_id: string) => of(mockTask),
+        });
+        const showOrFocus = jasmine.createSpy('showOrFocus');
+        // Add to the existing mock (mockElectronApi) — replacing it would drop
+        // the response plumbing (sendLocalRestApiResponse) and hang the request.
+        (window as any).ea.showOrFocus = showOrFocus;
+        const navSvc = TestBed.inject(
+          NavigateToTaskService,
+        ) as jasmine.SpyObj<NavigateToTaskService>;
+
+        const response = await sendRequestAndWait(
+          createRequest('POST', '/task-control/focus', { body: { taskId: 'task-1' } }),
+        );
+
+        expect(response.body.ok).toBe(true);
+        expect(navSvc.navigate).toHaveBeenCalledWith('task-1');
+        expect(showOrFocus).toHaveBeenCalled();
+      });
+
+      it('should return 404 for a non-existent task', async () => {
+        Object.defineProperty(taskServiceMock, 'getByIdOnce$', {
+          get: () => (_id: string) => of(undefined),
+        });
+
+        const response = await sendRequestAndWait(
+          createRequest('POST', '/task-control/focus', { body: { taskId: 'nope' } }),
+        );
+
+        expect(response.body.ok).toBe(false);
+        expect(response.status).toBe(404);
+      });
+
+      it('should return 400 for a missing taskId', async () => {
+        const response = await sendRequestAndWait(
+          createRequest('POST', '/task-control/focus', { body: {} }),
         );
 
         expect(response.body.ok).toBe(false);
