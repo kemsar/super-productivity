@@ -133,3 +133,8 @@ data/
 /fastlane/appstore_metadata
 
 src/environments/versions.ts
+
+# fork-local working notes (untracked; never merge with upstream docs)
+/docs/handover.md
+/docs/plans/2026-07-16-sync-simplification-audit.md
+/docs/research/sync-simplification-audit/
