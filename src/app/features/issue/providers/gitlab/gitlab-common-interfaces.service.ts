@@ -188,17 +188,17 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       }
     }
 
-    // Project labels onto tagIds + stamp last-synced baseline.
+    // Stamp the two-way-sync baseline. The `state` baseline is required for
+    // "complete task → close issue" to push at all (issue #26): without it
+    // computePushDecisions bails with `no-baseline`. The `labels` baseline is
+    // added only when label-sync is on (issue #14).
+    const syncedValues: Record<string, unknown> = { state: issue.state };
     if (cfg.isSyncLabelsAsTags) {
       const labels = issue.labels ?? [];
-      out = {
-        ...out,
-        tagIds: this._labelsToTagIds(labels),
-        issueLastSyncedValues: {
-          labels: [...labels].sort((a, b) => a.localeCompare(b)),
-        },
-      };
+      out = { ...out, tagIds: this._labelsToTagIds(labels) };
+      syncedValues.labels = [...labels].sort((a, b) => a.localeCompare(b));
     }
+    out = { ...out, issueLastSyncedValues: syncedValues };
 
     return out;
   }
@@ -224,18 +224,24 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     }
 
     const labelSyncOn = !!cfg.isSyncLabelsAsTags;
+    const prevSyncedValues = (task.issueLastSyncedValues ?? {}) as Record<
+      string,
+      unknown
+    >;
     // We only need to fetch the issue (beyond what the base already did) when
-    // labels are synced OR the state/status board snapshot is missing and
-    // needs a one-time backfill. Once `issueState` is set, the base
-    // (updated_at) path keeps it fresh — so label-sync-off, already-backfilled
-    // tasks never pay an extra request here.
+    // labels are synced, the board snapshot is missing (issue #19), or the
+    // two-way-sync `state` baseline is missing (issue #26 — needed so
+    // completing the task can push a close). Each is a one-time backfill; once
+    // set, the base (updated_at) path keeps them fresh, so a settled task never
+    // pays an extra request here.
     const needsSnapshotBackfill = task.issueState === undefined;
-    if (!labelSyncOn && !needsSnapshotBackfill) {
+    const needsStateBaseline = prevSyncedValues['state'] === undefined;
+    if (!labelSyncOn && !needsSnapshotBackfill && !needsStateBaseline) {
       return base;
     }
 
     // The base method returns null when the remote issue's `updated_at`
-    // hasn't advanced. Labels/status can change (or a snapshot may be missing)
+    // hasn't advanced. Labels/status can change (or a baseline may be missing)
     // without updated_at bumping, so fetch the issue directly when base bailed.
     const issue: GitlabIssue = ((base?.issue as GitlabIssue) ??
       ((await firstValueFrom(
@@ -245,32 +251,41 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       return base;
     }
 
+    // Merged next baseline (issueLastSyncedValues). Only written into the task
+    // when a portion below actually changes it. NOTE: stamping
+    // issueLastSyncedValues here is safe from a push→pull loop — the two-way
+    // sync effect skips any updateTask whose changes carry issueLastSyncedValues.
+    const nextSyncedValues: Record<string, unknown> = { ...prevSyncedValues };
+
     // --- Label sync (issue #14) ---
-    let labelPortion: Partial<Task> = {};
-    let labelsUnchanged = true;
+    let tagIdsPortion: Partial<Task> = {};
+    let labelsChanged = false;
     if (labelSyncOn) {
       const remoteLabels = [...(issue.labels ?? [])].sort((a, b) => a.localeCompare(b));
       const lastLabels = this._getLastSyncedLabels(task);
-      labelsUnchanged =
+      labelsChanged = !(
         remoteLabels.length === lastLabels.length &&
-        remoteLabels.every((l, i) => l === lastLabels[i]);
-      labelPortion = {
+        remoteLabels.every((l, i) => l === lastLabels[i])
+      );
+      tagIdsPortion = {
         tagIds: this._mergeLabelsIntoExistingTagIds(
           task.tagIds ?? [],
           lastLabels,
           remoteLabels,
         ),
-        issueLastSyncedValues: {
-          ...task.issueLastSyncedValues,
-          labels: remoteLabels,
-        },
       };
+      nextSyncedValues.labels = remoteLabels;
+    }
+
+    // --- Two-way-sync state baseline (issue #26) ---
+    // Track the last-seen remote state so "complete task → close issue" has a
+    // baseline to push against (computePushDecisions skips without one).
+    const stateBaselineChanged = prevSyncedValues['state'] !== issue.state;
+    if (stateBaselineChanged) {
+      nextSyncedValues.state = issue.state;
     }
 
     // --- Board state/status snapshot (issue #19) ---
-    // Stamp/refresh the snapshot when it drifts from the remote issue. This
-    // backfills pre-existing tasks (undefined snapshot) on the next poll and
-    // catches status changes that don't bump updated_at.
     const snapshotPortion: Partial<TaskCopy> = {};
     if (issue.state !== task.issueState) {
       snapshotPortion.issueState = issue.state;
@@ -280,23 +295,26 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
       snapshotPortion.issueStatus = remoteStatusName;
     }
 
-    const hasLabelUpdate = labelSyncOn && !labelsUnchanged;
+    const hasLabelUpdate = labelSyncOn && labelsChanged;
     const hasSnapshotUpdate = Object.keys(snapshotPortion).length > 0;
 
     // Nothing to write beyond what the base already carried — no-op so we
     // don't spam an updateTask (and, for labels, the write-side effect).
-    if (!base && !hasLabelUpdate && !hasSnapshotUpdate) {
+    if (!base && !hasLabelUpdate && !hasSnapshotUpdate && !stateBaselineChanged) {
       return null;
     }
 
-    // A pure snapshot backfill must NOT set issueWasUpdated — otherwise every
-    // pre-existing task would show an "updated" badge on the first poll after
-    // upgrade. Only a real remote label change sets it (matching prior label
-    // behavior); base updates already carry their own flag.
+    // A pure snapshot/baseline backfill must NOT set issueWasUpdated —
+    // otherwise every pre-existing task would show an "updated" badge on the
+    // first poll after upgrade. Only a real remote label change sets it
+    // (matching prior label behavior); base updates carry their own flag.
     const changes: Partial<Task> = {
       ...(base?.taskChanges ?? (hasLabelUpdate ? { issueWasUpdated: true } : {})),
-      ...labelPortion,
+      ...tagIdsPortion,
       ...snapshotPortion,
+      ...(labelSyncOn || stateBaselineChanged
+        ? { issueLastSyncedValues: nextSyncedValues }
+        : {}),
     };
 
     return {

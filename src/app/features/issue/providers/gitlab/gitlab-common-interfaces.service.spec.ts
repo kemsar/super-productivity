@@ -110,9 +110,11 @@ const makeTask = (issueLastUpdated: number): Task =>
     issueType: 'GITLAB',
     issueLastUpdated,
     issueWasUpdated: false,
-    // Already-backfilled snapshot (matches makeIssue's state) so the board
-    // snapshot backfill doesn't fire in the general refresh specs.
+    // Already-backfilled snapshot + two-way-sync baseline (both match
+    // makeIssue's 'open' state) so neither the board snapshot backfill (#19)
+    // nor the state-baseline backfill (#26) fires in the general refresh specs.
     issueState: 'open',
+    issueLastSyncedValues: { state: 'open' },
   });
 
 describe('GitlabCommonInterfacesService', () => {
@@ -359,6 +361,25 @@ describe('GitlabCommonInterfacesService', () => {
       expect(result?.taskChanges.issueWasUpdated).toBeUndefined();
     });
 
+    it('backfills the two-way-sync state baseline for a task missing it (#26)', async () => {
+      const issueLastUpdated = new Date(BASE_UPDATED_AT).getTime();
+      // Pre-existing task: has the board snapshot but no `state` baseline, so
+      // completing it would never push a close until the baseline is stamped.
+      const task = {
+        ...makeTask(issueLastUpdated),
+        issueLastSyncedValues: undefined,
+      } as unknown as Task;
+      gitlabApiService.getById$.and.returnValue(of(makeIssue(BASE_UPDATED_AT)));
+
+      const result = await service.getFreshDataForIssueTask(task);
+
+      expect(
+        (result?.taskChanges.issueLastSyncedValues as { state?: string })?.state,
+      ).toBe('open');
+      // Baseline backfill is bookkeeping, not a user-facing remote change.
+      expect(result?.taskChanges.issueWasUpdated).toBeUndefined();
+    });
+
     it('does not re-fetch to backfill once the snapshot is present and unchanged', async () => {
       const issueLastUpdated = new Date(BASE_UPDATED_AT).getTime();
       gitlabApiService.getById$.and.returnValue(of(makeIssue(BASE_UPDATED_AT)));
@@ -499,13 +520,15 @@ describe('GitlabCommonInterfacesService', () => {
     });
 
     describe('getAddTaskDataForCfg', () => {
-      it('returns base shape when isSyncLabelsAsTags is off', () => {
+      it('stamps the state baseline (no labels) when isSyncLabelsAsTags is off', () => {
         const result = service.getAddTaskDataForCfg(
           makeIssueWithLabels(BASE_UPDATED_AT, ['bug', 'ready']),
           { ...BASE_CFG, isSyncLabelsAsTags: false },
         );
         expect(result.tagIds).toBeUndefined();
-        expect(result.issueLastSyncedValues).toBeUndefined();
+        // The two-way-sync `state` baseline is stamped regardless of label sync
+        // so "complete task → close issue" has a baseline to push (issue #26).
+        expect(result.issueLastSyncedValues).toEqual({ state: 'open' });
       });
 
       it('creates SP tags for issue labels and stamps issueLastSyncedValues', () => {
@@ -559,7 +582,7 @@ describe('GitlabCommonInterfacesService', () => {
         );
         const task: Task = {
           ...makeTask(new Date(BASE_UPDATED_AT).getTime()),
-          issueLastSyncedValues: { labels: ['bug'] },
+          issueLastSyncedValues: { labels: ['bug'], state: 'open' },
         };
 
         const result = await service.getFreshDataForIssueTask(task);
