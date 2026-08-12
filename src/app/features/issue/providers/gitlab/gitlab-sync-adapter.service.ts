@@ -10,6 +10,7 @@ import {
 } from '../../two-way-sync/issue-sync-adapter.interface';
 import { FieldMapping, FieldSyncConfig } from '../../two-way-sync/issue-sync.model';
 import { IssueLog } from '../../../../core/log';
+import { toCanonicalGitlabState } from './gitlab-issue-map.util';
 
 /**
  * Task ↔ issue field bridge. Kept small on purpose — closing a task in
@@ -28,8 +29,12 @@ const GITLAB_FIELD_MAPPINGS: FieldMapping[] = [
     taskField: 'isDone',
     issueField: 'state',
     defaultDirection: 'pushOnly',
-    toIssueValue: (taskValue: unknown): 'opened' | 'closed' =>
-      taskValue ? 'closed' : 'opened',
+    // Canonical 'open'/'closed' (not REST's 'opened') so the value written back
+    // to the baseline after a push matches what extractSyncValues produces on
+    // the next fetch — otherwise a reopen would leave an 'opened' baseline that
+    // never equals a subsequent 'open' fetch (#26 close/reopen consistency).
+    toIssueValue: (taskValue: unknown): 'open' | 'closed' =>
+      taskValue ? 'closed' : 'open',
     toTaskValue: (issueValue: unknown): boolean => issueValue === 'closed',
   },
 ];
@@ -200,10 +205,13 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
   }
 
   extractSyncValues(issue: Record<string, unknown>): Record<string, unknown> {
-    // Baseline for the push-decisions comparator. Only fields the
-    // mapping tracks need entries — extra fields would just get ignored.
+    // Baseline for the push-decisions comparator. Only fields the mapping
+    // tracks need entries. Canonicalize state so a baseline stamped from a
+    // GraphQL read ('open') and a fresh value fetched via REST ('opened')
+    // compare equal — otherwise the isDone→close push is silently skipped as
+    // 'provider-changed' (#26).
     return {
-      state: issue['state'],
+      state: toCanonicalGitlabState(issue['state']),
     };
   }
 

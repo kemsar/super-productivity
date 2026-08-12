@@ -92,6 +92,18 @@ export const mapGitlabIssueToSearchResult = (issue: GitlabIssue): SearchResultIt
   };
 };
 
+/**
+ * Canonical state for two-way sync. GitLab reports issue state as both
+ * `'opened'` (REST) and `'open'` (GraphQL, normalized elsewhere here), so a
+ * baseline stamped from one read path and a fresh value fetched from the other
+ * must not be treated as different. Only closed-vs-not-closed matters for the
+ * isDone↔state mapping, so collapse everything that isn't `'closed'` to
+ * `'open'`. Used by the sync adapter (extractSyncValues / toIssueValue) and by
+ * the baseline stamping in common-interfaces so both sides compare equal.
+ */
+export const toCanonicalGitlabState = (state: unknown): 'open' | 'closed' =>
+  state === 'closed' ? 'closed' : 'open';
+
 const _gqlStateToRestState = (state: GitlabGqlIssueState): GitlabOriginalIssueState => {
   // GraphQL uses "opened"/"closed"/"locked", REST uses "open"/"closed". The
   // rest of the app treats "closed" as done and everything else as active, so

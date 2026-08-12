@@ -412,6 +412,17 @@ describe('GitlabSyncAdapterService', () => {
       });
     });
 
+    it('canonicalizes REST "opened" to "open" so GraphQL and REST baselines compare equal (#26)', () => {
+      // GraphQL reads normalize to 'open'; REST reads return 'opened'. Without
+      // canonicalization the baseline (GraphQL) never equals the push-time
+      // fetch (REST) and the close is silently skipped as 'provider-changed'.
+      expect(service.extractSyncValues({ state: 'opened' })).toEqual({ state: 'open' });
+      expect(service.extractSyncValues({ state: 'open' })).toEqual({ state: 'open' });
+      expect(service.getFieldMappings()[0].toIssueValue(false, { issueId: 'x#1' })).toBe(
+        'open',
+      );
+    });
+
     it('translates a state=closed change to state_event=close on the PUT', async () => {
       await service.pushChanges('mygroup/repo#1', { state: 'closed' }, makeCfg());
       expect(apiSpy.updateIssue$).toHaveBeenCalledWith(

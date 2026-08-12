@@ -9,6 +9,7 @@ import { GitlabApiService } from './gitlab-api/gitlab-api.service';
 import { GitlabGraphqlApiService } from './gitlab-api/gitlab-graphql-api.service';
 import { GitlabCfg } from './gitlab.model';
 import { GitlabIssue } from './gitlab-issue.model';
+import { toCanonicalGitlabState } from './gitlab-issue-map.util';
 import { truncate } from '../../../../util/truncate';
 import { GITLAB_BASE_URL, GITLAB_POLL_INTERVAL } from './gitlab.const';
 import { TagService } from '../../../tag/tag.service';
@@ -192,7 +193,9 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     // "complete task → close issue" to push at all (issue #26): without it
     // computePushDecisions bails with `no-baseline`. The `labels` baseline is
     // added only when label-sync is on (issue #14).
-    const syncedValues: Record<string, unknown> = { state: issue.state };
+    const syncedValues: Record<string, unknown> = {
+      state: toCanonicalGitlabState(issue.state),
+    };
     if (cfg.isSyncLabelsAsTags) {
       const labels = issue.labels ?? [];
       out = { ...out, tagIds: this._labelsToTagIds(labels) };
@@ -280,9 +283,10 @@ export class GitlabCommonInterfacesService extends BaseIssueProviderService<Gitl
     // --- Two-way-sync state baseline (issue #26) ---
     // Track the last-seen remote state so "complete task → close issue" has a
     // baseline to push against (computePushDecisions skips without one).
-    const stateBaselineChanged = prevSyncedValues['state'] !== issue.state;
+    const canonicalState = toCanonicalGitlabState(issue.state);
+    const stateBaselineChanged = prevSyncedValues['state'] !== canonicalState;
     if (stateBaselineChanged) {
-      nextSyncedValues.state = issue.state;
+      nextSyncedValues.state = canonicalState;
     }
 
     // --- Board state/status snapshot (issue #19) ---
