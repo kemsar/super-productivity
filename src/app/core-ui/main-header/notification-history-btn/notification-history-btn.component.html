@@ -1,0 +1,85 @@
+<button
+  class="notification-history-btn secondary-header-action"
+  [matBadge]="unseenCount()"
+  [matBadgeHidden]="unseenCount() === 0"
+  matBadgeColor="accent"
+  matBadgeSize="small"
+  matBadgeOverlap="true"
+  [matBadgeDescription]="
+    unseenCount() > 0 ? (T.NOTIFICATION_HISTORY.TOOLTIP | translate) : ''
+  "
+  matTooltip="{{ T.NOTIFICATION_HISTORY.TOOLTIP | translate }}"
+  [attr.aria-label]="T.NOTIFICATION_HISTORY.TOOLTIP | translate"
+  [matMenuTriggerFor]="menu"
+  (menuOpened)="onMenuOpened()"
+  mat-icon-button
+>
+  <mat-icon>{{ hasEntries() ? 'notifications' : 'notifications_none' }}</mat-icon>
+</button>
+
+<mat-menu
+  #menu="matMenu"
+  xPosition="before"
+  class="notification-history-menu"
+>
+  <ng-template matMenuContent>
+    <div
+      class="notification-history-panel"
+      (click)="$event.stopPropagation()"
+    >
+      <div class="notification-history-header">
+        <span class="title">{{ T.NOTIFICATION_HISTORY.TITLE | translate }}</span>
+        @if (hasEntries()) {
+          <div class="header-actions">
+            <button
+              mat-button
+              type="button"
+              (click)="onMarkAllSeen()"
+              [disabled]="unseenCount() === 0"
+            >
+              {{ T.NOTIFICATION_HISTORY.MARK_ALL_SEEN | translate }}
+            </button>
+            <button
+              mat-button
+              type="button"
+              (click)="onClearAll()"
+            >
+              {{ T.NOTIFICATION_HISTORY.CLEAR_ALL | translate }}
+            </button>
+          </div>
+        }
+      </div>
+
+      <ul class="notification-history-list">
+        @for (entry of entries(); track trackById($index, entry)) {
+          <li
+            class="notification-history-item"
+            [class.kind-error]="entry.kind === 'ERROR'"
+            [class.kind-warning]="entry.kind === 'WARNING'"
+            [class.kind-task-update]="entry.kind === 'TASK_UPDATE'"
+            [class.is-unseen]="isUnseen(entry)"
+            [class.is-clickable]="!!entry.taskId || !!entry.actionId"
+            (click)="onEntryClick(entry)"
+          >
+            <mat-icon class="item-icon">{{ iconFor(entry) }}</mat-icon>
+            <div class="item-body">
+              <div class="item-msg">{{ translateEntry(entry) }}</div>
+              <div class="item-meta">
+                <span class="item-time">{{ relativeTime(entry) }}</span>
+                @if (entry.taskId) {
+                  <span class="item-link">
+                    {{ T.NOTIFICATION_HISTORY.OPEN_TASK | translate }}
+                  </span>
+                }
+              </div>
+            </div>
+          </li>
+        } @empty {
+          <li class="notification-history-empty">
+            {{ T.NOTIFICATION_HISTORY.EMPTY | translate }}
+          </li>
+        }
+      </ul>
+    </div>
+  </ng-template>
+</mat-menu>

@@ -710,7 +710,11 @@ describe('OperationEncryptionService', () => {
         'timeTracking',
       ] as const;
 
-      const optionalFullStateKeys = ['pluginUserData', 'pluginMetadata'] as const;
+      const optionalFullStateKeys = [
+        'pluginUserData',
+        'pluginMetadata',
+        'notificationHistory',
+      ] as const;
 
       it('rejects an ordinary encrypted op promoted to SYNC_IMPORT (single)', async () => {
         const encrypted = await service.encryptOperation(

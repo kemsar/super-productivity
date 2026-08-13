@@ -108,6 +108,10 @@ import {
   REMINDER_FEATURE_NAME,
   reminderReducer,
 } from '../features/reminder/store/reminder.reducer';
+import {
+  NOTIFICATION_HISTORY_FEATURE_NAME,
+  notificationHistoryReducer,
+} from '../features/notification-history/store/notification-history.reducer';
 @NgModule({
   declarations: [],
   imports: [
@@ -177,6 +181,7 @@ import {
     StoreModule.forFeature(PLUGIN_USER_DATA_FEATURE_NAME, pluginUserDataReducer),
     StoreModule.forFeature(PLUGIN_METADATA_FEATURE_NAME, pluginMetadataReducer),
     StoreModule.forFeature(REMINDER_FEATURE_NAME, reminderReducer),
+    StoreModule.forFeature(NOTIFICATION_HISTORY_FEATURE_NAME, notificationHistoryReducer),
 
     // EFFECTS ONLY
     EffectsModule.forFeature([

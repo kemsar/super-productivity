@@ -105,6 +105,7 @@ export const createValidAppData = (
     timeTracking: initialTimeTrackingState,
     pluginUserData: [],
     pluginMetadata: [],
+    notificationHistory: undefined,
     archiveYoung: {
       task: { ids: [], entities: {} },
       timeTracking: initialTimeTrackingState,
@@ -356,6 +357,7 @@ export const rootStateToAppData = (
     reminders: additionalData.reminders || [],
     pluginUserData: additionalData.pluginUserData || [],
     pluginMetadata: additionalData.pluginMetadata || [],
+    notificationHistory: undefined,
     archiveYoung: additionalData.archiveYoung || {
       task: { ids: [], entities: {} },
       timeTracking: initialTimeTrackingState,

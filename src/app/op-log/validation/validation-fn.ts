@@ -30,6 +30,7 @@ import {
   PluginMetaDataState,
   PluginUserDataState,
 } from '../../plugins/plugin-persistence.model'; // for more speed
+import { NotificationHistoryState } from '../../features/notification-history/notification-history.model';
 
 // TODO check if we can improve on this
 // for more speed
@@ -55,6 +56,9 @@ const _validateTimeTracking = createValidate<TimeTrackingState>();
 const _validatePluginUserData = createValidate<PluginUserDataState>();
 const _validatePluginMetadata = createValidate<PluginMetaDataState>();
 const _validateSection = createValidate<SectionState>();
+const _validateNotificationHistory = createValidate<
+  NotificationHistoryState | undefined
+>();
 
 /**
  * `Task.issueType` and `IssueProvider.issueProviderKey` are validated against the
@@ -193,6 +197,8 @@ export const appDataValidators: {
     _wrapValidate(_validatePluginMetadata(d), d, false, 'pluginMetadata'),
   section: <R>(d: R | SectionState) =>
     _wrapValidate(_validateSection(d), d, true, 'section'),
+  notificationHistory: <R>(d: R | NotificationHistoryState | undefined) =>
+    _wrapValidate(_validateNotificationHistory(d), d, false, 'notificationHistory'),
 } as const;
 
 const logValidationFailure = <R>(

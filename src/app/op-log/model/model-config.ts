@@ -42,6 +42,10 @@ import {
   PluginUserDataState,
 } from '../../plugins/plugin-persistence.model';
 import { menuTreeInitialState } from '../../features/menu-tree/store/menu-tree.reducer';
+import {
+  initialNotificationHistoryState,
+  NotificationHistoryState,
+} from '../../features/notification-history/notification-history.model';
 
 export const CROSS_MODEL_VERSION = 4.5 as const;
 
@@ -65,6 +69,9 @@ export type AllModelConfig = {
   pluginMetadata: ModelCfg<PluginMetaDataState | undefined>;
   archiveYoung: ModelCfg<ArchiveModel>;
   archiveOld: ModelCfg<ArchiveModel>;
+  // Optional to keep legacy data (from installs pre-dating this fork feature)
+  // valid on hydration — see CLAUDE.md sync rule #11.
+  notificationHistory: ModelCfg<NotificationHistoryState | undefined>;
 };
 
 export type AppDataComplete = AllModelData<AllModelConfig>;
@@ -163,6 +170,12 @@ export const MODEL_CONFIGS: AllModelConfig = {
       ...d,
       task: fixEntityStateConsistency(d.task),
     }),
+  },
+  // Whole-state synced blob (fork-only). Not isMainFileModel: kept out of the
+  // main-file reset path so USE_REMOTE resolution can't wipe the local history.
+  // See docs/sync-and-op-log/contributor-sync-model.md and CLAUDE.md sync rules.
+  notificationHistory: {
+    defaultData: initialNotificationHistoryState,
   },
 } as const;
 

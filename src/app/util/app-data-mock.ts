@@ -60,4 +60,5 @@ export const createAppDataCompleteMock = (): AppDataComplete => ({
 
   pluginMetadata: [],
   pluginUserData: [],
+  notificationHistory: undefined,
 });

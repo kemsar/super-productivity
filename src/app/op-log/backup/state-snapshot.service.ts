@@ -10,6 +10,7 @@ import { selectMetricFeatureState } from '../../features/metric/store/metric.sel
 import { selectPluginUserDataFeatureState } from '../../plugins/store/plugin-user-data.reducer';
 import { selectPluginMetadataFeatureState } from '../../plugins/store/plugin-metadata.reducer';
 import { selectReminderFeatureState } from '../../features/reminder/store/reminder.reducer';
+import { selectNotificationHistoryState } from '../../features/notification-history/store/notification-history.selectors';
 import { selectNoteFeatureState } from '../../features/note/store/note.reducer';
 import { selectPlannerState } from '../../features/planner/store/planner.selectors';
 import { selectProjectFeatureState } from '../../features/project/store/project.selectors';
@@ -70,6 +71,7 @@ const SNAPSHOT_SELECTORS: readonly {
   { key: 'pluginMetadata', selector: selectPluginMetadataFeatureState },
   { key: 'reminders', selector: selectReminderFeatureState },
   { key: 'section', selector: selectSectionFeatureState },
+  { key: 'notificationHistory', selector: selectNotificationHistoryState },
 ] as const;
 
 /**

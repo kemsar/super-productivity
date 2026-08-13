@@ -12,6 +12,8 @@ import { ofType } from '@ngrx/effects';
 import { setActiveWorkContext } from '../../features/work-context/store/work-context.actions';
 import { debounce } from '../../util/decorators';
 import { LOCAL_ACTIONS } from '../../util/local-actions.token';
+import { NotificationHistoryService } from '../../features/notification-history/notification-history.service';
+import { Log } from '../log';
 
 @Injectable({
   providedIn: 'root',
@@ -21,6 +23,7 @@ export class SnackService {
   private _translateService = inject(TranslateService);
   private _actions$ = inject(LOCAL_ACTIONS);
   private _matSnackBar = inject(MatSnackBar);
+  private _notificationHistory = inject(NotificationHistoryService);
 
   private _ref?: MatSnackBarRef<SnackCustomComponent | SimpleSnackBar>;
   private _hasPendingPersistentAction = false;
@@ -38,6 +41,7 @@ export class SnackService {
     if (typeof params === 'string') {
       params = { msg: params };
     }
+    this._recordIfEligible(params);
     const isPersistentAction = !!(params.actionStr && params.config?.duration === 0);
     // A sticky recovery/update action must survive unrelated success, info and
     // error feedback in the app's single snack slot. Another sticky actionable
@@ -57,6 +61,37 @@ export class SnackService {
 
   hasPendingPersistentAction(): boolean {
     return this._hasPendingPersistentAction;
+  }
+
+  // Cheap, side-effect-free filter for the notification-history recorder. Only
+  // ERROR/WARNING snacks and snacks that carry a taskId (task-update events
+  // from GitLab / Jira / OpenProject / CalDAV two-way sync) are kept — the
+  // recorder itself catches its own errors so the render path is never
+  // affected. See docs & CLAUDE.md sync rules for the fork-only scope.
+  private _recordIfEligible(params: SnackParams): void {
+    if (params.isSkipHistory) return;
+    if (params.isSpinner || params.promise || params.showWhile$) return;
+
+    const isTaskUpdate = !!params.taskId;
+    const isError = params.type === 'ERROR';
+    const isWarning = params.type === 'WARNING';
+    if (!isTaskUpdate && !isError && !isWarning) return;
+
+    try {
+      this._notificationHistory.record({
+        kind: isTaskUpdate ? 'TASK_UPDATE' : isError ? 'ERROR' : 'WARNING',
+        msg: params.msg,
+        isSkipTranslate: params.isSkipTranslate,
+        translateParams: params.translateParams,
+        taskId: params.taskId,
+        actionId: params.actionId,
+        actionPayload: params.actionPayload,
+        ico: params.ico,
+        svgIco: params.svgIco,
+      });
+    } catch (err) {
+      Log.err('SnackService._recordIfEligible failed', err);
+    }
   }
 
   close(): void {

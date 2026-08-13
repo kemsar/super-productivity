@@ -1000,7 +1000,8 @@ describe('OperationLogCompactionService', () => {
           key === 'globalConfig' ||
           key === 'planner' ||
           key === 'menuTree' ||
-          key === 'timeTracking'
+          key === 'timeTracking' ||
+          key === 'notificationHistory'
         ) {
           completeState[key] = { someData: true }; // Singleton existence check
         } else if (key === 'pluginUserData') {
@@ -1043,6 +1044,7 @@ describe('OperationLogCompactionService', () => {
         pluginUserData: 'PLUGIN_USER_DATA',
         pluginMetadata: 'PLUGIN_METADATA',
         section: 'SECTION',
+        notificationHistory: 'NOTIFICATION_HISTORY',
       };
 
       const missingModels: string[] = [];

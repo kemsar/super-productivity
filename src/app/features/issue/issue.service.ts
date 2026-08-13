@@ -412,6 +412,7 @@ export class IssueService {
             ),
             issueTitle: update.issueTitle,
           },
+          taskId: task.id,
         });
       }
     } else if (isNotifyNoUpdateRequired) {
@@ -498,6 +499,7 @@ export class IssueService {
               ),
               issueTitle: updates[0].taskChanges.title || updates[0].task.title,
             },
+            taskId: updates[0].task.id,
           });
         } else if (updates.length > 1) {
           this._snackService.open({

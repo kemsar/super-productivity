@@ -43,6 +43,7 @@ import { PluginSidePanelBtnsComponent } from '../../plugins/ui/plugin-side-panel
 import { PageTitleComponent } from './page-title/page-title.component';
 import { PlayButtonComponent } from './play-button/play-button.component';
 import { DesktopPanelButtonsComponent } from './desktop-panel-buttons/desktop-panel-buttons.component';
+import { NotificationHistoryBtnComponent } from './notification-history-btn/notification-history-btn.component';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { MetricService } from '../../features/metric/metric.service';
 import { DateService } from '../../core/date/date.service';
@@ -73,6 +74,7 @@ import { ConflictJournalService } from '../../op-log/sync/conflict-journal.servi
     PageTitleComponent,
     PlayButtonComponent,
     DesktopPanelButtonsComponent,
+    NotificationHistoryBtnComponent,
     UserProfileButtonComponent,
     FocusButtonComponent,
   ],

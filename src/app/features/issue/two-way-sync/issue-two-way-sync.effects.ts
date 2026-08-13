@@ -210,6 +210,7 @@ export class IssueTwoWaySyncEffects {
                 type: 'ERROR',
                 msg: T.F.ISSUE.S.TWO_WAY_SYNC_PUSH_FAILED,
                 translateParams: { errorMsg: getErrorTxt(err) },
+                taskId: fullTask.id,
               });
               return EMPTY;
             }),
@@ -259,6 +260,7 @@ export class IssueTwoWaySyncEffects {
                 type: 'ERROR',
                 msg: T.F.ISSUE.S.TWO_WAY_SYNC_PUSH_FAILED,
                 translateParams: { errorMsg: getErrorTxt(err) },
+                taskId: task.id,
               });
               return EMPTY;
             }),
@@ -408,6 +410,7 @@ export class IssueTwoWaySyncEffects {
                 type: 'ERROR',
                 msg: T.F.ISSUE.S.AUTO_CREATE_FAILED,
                 translateParams: { errorMsg: getErrorTxt(err) },
+                taskId: task.id,
               });
               return EMPTY;
             }),
@@ -607,6 +610,8 @@ export class IssueTwoWaySyncEffects {
               this._snackService.open({
                 type: 'ERROR',
                 msg: T.F.ISSUE.S.DELETE_REMOTE_FAILED,
+                // No taskId here — the task has already been deleted; the
+                // snack is informational and shouldn't try to navigate.
               });
               return EMPTY;
             }),

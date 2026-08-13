@@ -2992,6 +2992,14 @@
     "TASK_ALREADY_COMPLETED": "Task already completed",
     "TASK_MARKED_DONE": "Task marked as done"
   },
+  "NOTIFICATION_HISTORY": {
+    "TITLE": "Notifications",
+    "EMPTY": "No notifications yet.",
+    "MARK_ALL_SEEN": "Mark all as seen",
+    "CLEAR_ALL": "Clear all",
+    "OPEN_TASK": "Open task",
+    "TOOLTIP": "Notification history"
+  },
   "ONBOARDING": {
     "TITLE": "How do you want to use Super Productivity?",
     "SUBTITLE": "Pick a setup that matches your workflow. You can always change this later in Settings.",
