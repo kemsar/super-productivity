@@ -31,7 +31,6 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     isSyncIconEnabled: true,
     isSearchEnabled: true,
     isDonatePageEnabled: true,
-    isEnableUserProfiles: false,
     isHabitsEnabled: true,
     isFinishDayEnabled: true,
   },
@@ -178,6 +177,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     taskUnschedule: 'U',
     taskToggleDone: 'D',
     taskAddSubTask: 'A',
+    taskDuplicate: 'Ctrl+D',
     taskAddAttachment: 'L',
     taskDelete: 'Backspace',
     taskMoveToProject: 'E',
@@ -193,6 +193,7 @@ export const DEFAULT_GLOBAL_CONFIG: GlobalConfigState = {
     collapseSubTasks: null,
     togglePlay: 'Y',
     taskEditTags: 'G',
+    taskToggleSelect: 'X',
   },
   localBackup: {
     isEnabled: true,

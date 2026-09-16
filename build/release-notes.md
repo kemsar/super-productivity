@@ -2,11 +2,5 @@ For all current downloads, package links, and platform-specific notes: [check th
 
 ### Fixes
 
-- Workday recurrences no longer start on a weekend selected from the add-task menu (#9404).
-- Plugin `addTask` and `updateTask` behavior now matches the local REST API (#9490).
-- Restored macOS release builds (#9487).
-- Improved monitoring report accuracy and capped report scope and database usage.
-
-### Notices
-
-- Added a warning that User Profiles will be removed in the next release (#9491).
+- Pressing Escape now properly leaves the plain-text notes field (#10080).
+- Task details no longer steal focus back from a field you have re-entered (#10079).

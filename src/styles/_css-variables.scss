@@ -75,10 +75,14 @@
   // SystemBars WebView bands. Caveat: on the narrow API >= 35 / WebView < 140
   // band the shared source can double-count vs SystemBars' native padding (a
   // cosmetic gap, not an overlap — see the device-matrix risks in
-  // docs/plans/2026-06-22-android-systembars-migration-corrected.md).
+  // docs/android-edge-to-edge-keyboard.md).
   --bottom-nav-safe-area: calc(var(--safe-area-bottom) / 2);
 
-  // Keyboard height (set dynamically via JS)
+  // Keyboard geometry. Android / mobile web write `--keyboard-height` here from
+  // JS (GlobalThemeService). On iOS these are fallbacks only: the live values
+  // go on `.cdk-overlay-container` and the global add-task bar's host, never on
+  // :root, where a write restyles the whole task list (#9779) — see
+  // IosKeyboardService, which also hands the app shell its height directly.
   --keyboard-height: 0px;
   --keyboard-overlay-offset: 0px;
   --visual-viewport-height: 100vh;
@@ -89,6 +93,8 @@
   --s: 8px;
   --s-quarter: 2px;
   --s-half: 4px;
+  // Glyph inside the done toggle and the multi-select ring that replaces it.
+  --done-toggle-glyph-size: 22px;
 
   // -----------------------------
   // Fonts
@@ -196,6 +202,7 @@
   --z-onboarding-presets: 999;
   --z-mobile-bottom-nav: 50;
   --z-right-panel: 44;
+  --z-multi-select-bar: 45;
   --z-right-panel-resize-handle: 65;
   --z-right-panel-edge-handle: 66;
   --z-vertical-action-bar: 70;
@@ -261,6 +268,8 @@
   --c-accent: var(--palette-accent-500);
   --c-warn: var(--palette-warn-500);
   --c-contrast: var(--palette-primary-contrast-500);
+  --c-accent-contrast: var(--palette-accent-contrast-500);
+  --c-warn-contrast: var(--palette-warn-contrast-500);
 
   // ===============================
   // ANIMATION & TRANSITIONS
@@ -754,10 +763,7 @@ body.isDarkTheme {
 }
 
 // -----------------------------
-// State-token demo migrations (this PR — scope per plan §3):
-//   * src/app/features/user-profile/dialog-user-profile-management — `:hover`
-//     overlay + `.active-profile` selected lift now consume `--state-hover` /
-//     `--state-selected`.
+// State-token demo migration (this PR — scope per plan §3):
 //   * src/app/imex/sync/dialog-restore-point — `:hover` overlay + `.selected`
 //     lift now consume `--state-hover` / `--state-selected`.
 // Bulk migration of remaining ~34 ad-hoc rgba state-overlay callsites is a

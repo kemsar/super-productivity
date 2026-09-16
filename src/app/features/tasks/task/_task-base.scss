@@ -41,6 +41,10 @@
     z-index: var(--z-focus-host);
     outline: none;
   }
+
+  &.highlight-searched-task {
+    z-index: var(--z-focus-host);
+  }
 }
 
 .inner-wrapper {
@@ -111,6 +115,15 @@
     border-style: solid !important;
   }
 
+  // Temporary attention highlight for a task revealed via navigation, e.g. from
+  // a search result (LayoutService.highlightTaskBriefly, #5476). An outline, so
+  // it stays clearly visible even once the focus border above is gone, and it
+  // traces whatever radius the box already has — no border-radius of its own, so
+  // nothing can leak into the sub-task boxes (which are deliberately square).
+  :host.highlight-searched-task .inner-wrapper > & {
+    outline: var(--focus-ring-width) solid var(--c-accent);
+  }
+
   :host.isCurrent.isCurrent.isCurrent.isCurrent.isCurrent & {
     background: var(--task-c-current-bg);
     border-radius: var(--task-border-radius);
@@ -128,12 +141,6 @@
   :host.isSelected.isSelected .inner-wrapper > &,
   :host.isSelected.isCurrent.isCurrent.isCurrent.isCurrent & {
     @include mq(xs) {
-      right: -34px;
-    }
-    @include mq(md) {
-      right: -234px;
-    }
-    @include mq(xl) {
       right: calc(-1 * var(--task-border-radius));
     }
   }
@@ -188,6 +195,12 @@
       border-color: var(--extra-border-color);
     }
   }
+
+  // Same leak as above for the temporary search highlight: without this, a
+  // highlighted parent would draw the outline around every subtask box too.
+  :host.highlight-searched-task & .inner-wrapper > .box {
+    outline: none;
+  }
 }
 
 :host-context(.isDarkTheme) ::ng-deep .isDone.isDone .box {
@@ -225,6 +238,12 @@
   flex-grow: 1;
   flex-shrink: 1;
   flex-basis: 70%;
+  // Without this the automatic minimum size keeps the wrapper at its min-content
+  // width, which the nowrap .parent-title carries as the full untruncated parent
+  // name. On narrow screens the wrapper then outgrows .first-line and, because we
+  // center here, the overflow is split evenly left and right — pushing the start
+  // of the title off the left edge (#9750).
+  min-width: 0;
   // we cannot do this since this cuts of the box shadow of the task edit
   //overflow: hidden;
   -webkit-tap-highlight-color: transparent;
@@ -242,4 +261,56 @@
       text-decoration: line-through;
     }
   }
+}
+
+// MULTI-SELECT
+// ------------
+// Part of a multi-selection (see TaskMultiSelectService). Deliberately no
+// checkmark: a check means *done* in this app. The tint plus the leading accent
+// stripe carry the state and stay distinct from the focus ring (border) and
+// the detail-panel highlight (.isSelected shadow).
+:host.isMultiSelected .inner-wrapper > .box {
+  background: color-mix(in srgb, var(--c-accent) 14%, var(--task-c-bg));
+  border-left: 3px solid var(--c-accent);
+}
+
+:host.isMultiSelected.isDone .inner-wrapper > .box {
+  background: color-mix(in srgb, var(--c-accent) 10%, var(--task-c-bg-done));
+}
+
+// Touch selection mode: the leading slot shows an empty ring that fills solid
+// with the accent when selected (no tick inside).
+.select-ring {
+  flex: 0 0 var(--task-icon-size);
+  width: var(--task-icon-size);
+  height: var(--task-icon-size);
+  // Same slot and margin as the done-toggle it replaces (_task-controls.scss)
+  // so the title does not shift when the mode toggles.
+  margin-left: var(--s);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &::before {
+    content: '';
+    width: var(--done-toggle-glyph-size);
+    height: var(--done-toggle-glyph-size);
+    border-radius: 50%;
+    border: var(--s-quarter) solid var(--c-accent);
+    box-sizing: border-box;
+    transition: var(--transition-fast);
+    transition-property: background-color;
+  }
+
+  &.isOn::before {
+    background: var(--c-accent);
+  }
+}
+
+// In touch selection mode a tap anywhere on the row toggles it: row controls
+// (schedule / deadline / attachment / checklist / panel buttons) let the tap
+// fall through to the host. The subtask toggle stays live so nested rows can
+// be reached.
+:host.isTouchSelectionMode .all-controls-wrapper .ico-btn {
+  pointer-events: none;
 }

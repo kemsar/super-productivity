@@ -477,7 +477,7 @@ export class GitlabGraphqlApiService {
   ): T {
     if (res.errors && res.errors.length > 0) {
       const messages = res.errors.map((e) => e.message).join('; ');
-      IssueLog.log('GitLab GraphQL errors', { messages });
+      IssueLog.log('GitLab GraphQL errors', { errorCount: res.errors.length });
       if (markUnavailableOnError) this._markUnavailable(cfg);
       throw {
         [HANDLED_ERROR_PROP_STR]: `${ISSUE_PROVIDER_HUMANIZED[GITLAB_TYPE]}: ${messages}`,

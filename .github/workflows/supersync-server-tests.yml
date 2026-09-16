@@ -23,8 +23,12 @@ jobs:
     name: SuperSync Server Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    env:
-      DATABASE_URL: postgresql://supersync:superpassword@localhost:5432/supersync_db
+    # DATABASE_URL is set PER STEP, not here. Job-level it also reached the unit step, and
+    # the unit suite is written for a machine with no database: monitoring-db.ts adds a
+    # `datasources` override only when DATABASE_URL is set, so monitoring-scripts.spec.ts's
+    # exact-match assertion passed locally and failed on every CI run. That failure then
+    # skipped the two steps below, so the PostgreSQL integration suite never ran here at
+    # all while the check still reported on it.
     services:
       postgres:
         image: postgres:16-alpine
@@ -71,11 +75,37 @@ jobs:
             echo 'connectionLimit=0 unexpectedly passed Helm validation' >&2
             exit 1
           fi
+          # A blank required secret must fail the render, not reach a pod. Both the
+          # empty-string and the YAML-null spelling: `key:` with no value is nil.
+          for blank in '--set postgresql.password=' '--set postgresql.password=null'; do
+            if helm template supersync helm/supersync \
+              --set supersync.secret.jwtSecret=01234567890123456789012345678901 \
+              $blank >/dev/null 2>&1; then
+              echo "blank postgresql.password ($blank) unexpectedly passed Helm validation" >&2
+              exit 1
+            fi
+          done
+          # An external database with neither url nor existingSecret must fail too.
+          if helm template supersync helm/supersync \
+            --set supersync.secret.jwtSecret=01234567890123456789012345678901 \
+            --set postgresql.enabled=false >/dev/null 2>&1; then
+            echo 'externalDatabase with no url or existingSecret unexpectedly passed' >&2
+            exit 1
+          fi
+          # Liveness must stay off the DB-gated endpoint; readiness and startup keep it.
+          rendered=$(helm template "${chart_args[@]}")
+          printf '%s\n' "$rendered" | grep -A3 'livenessProbe:' | grep -q 'path: /live'
+          printf '%s\n' "$rendered" | grep -A3 'readinessProbe:' | grep -q 'path: /health'
+          printf '%s\n' "$rendered" | grep -A3 'startupProbe:' | grep -q 'path: /health'
       - name: Run SuperSync Server Tests
         run: cd packages/super-sync-server && npm test
       - name: Apply PostgreSQL Test Schema
         working-directory: packages/super-sync-server
+        env:
+          DATABASE_URL: postgresql://supersync:superpassword@localhost:5432/supersync_db
         run: npx prisma db push --skip-generate
       - name: Run SuperSync PostgreSQL Integration Tests
         working-directory: packages/super-sync-server
+        env:
+          DATABASE_URL: postgresql://supersync:superpassword@localhost:5432/supersync_db
         run: npm run test:integration:postgres

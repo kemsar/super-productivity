@@ -78,7 +78,7 @@ export class GitlabTreeImportService {
     // Pass 1: create SP projects for any discovered GitLab project not already
     // in the mapping. No new GitLab providers — the parent group provider
     // remains the single polling source; routing happens per-issue via
-    // getAddTaskDataForCfg. Bulk-dispatch shape from CLAUDE.md rule #6: many
+    // getAddTaskDataForCfg. Bulk-dispatch shape from AGENTS.md rule #6: many
     // rapid `addProject` dispatches are followed by `setTimeout(0)` before the
     // menu-tree write reads the settled store.
     const walkProjects = (node: GitlabDiscoveredGroup): void => {
@@ -198,6 +198,7 @@ export class GitlabTreeImportService {
       const taskWithSubs = await firstValueFrom(
         this._taskService.getByIdWithSubTaskData$(task.id),
       );
+      if (!taskWithSubs) continue;
       this._taskService.moveToProject(taskWithSubs, entry.spProjectId);
       moved++;
     }

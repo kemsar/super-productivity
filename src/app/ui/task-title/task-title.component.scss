@@ -3,6 +3,16 @@
 
 // TODO rename to task title component
 
+// .display-value, the edit textarea and .height-measure all take `font-size:
+// inherit`, so raising it on the host moves all three at once — the textarea
+// clears the iOS zoom threshold and stays measured correctly by
+// .height-measure. Raising only the textarea would desync that pair and
+// mis-size the box. Written out rather than via noIosFocusZoomOnTouch() because
+// that mixin nests as a descendant, which cannot target the host itself.
+:host-context(body.isTouchPrimary) {
+  @include noIosFocusZoom();
+}
+
 :host {
   display: flex;
   align-items: center;
@@ -95,7 +105,10 @@
   cursor: text;
   position: absolute;
   inset: 0;
-  font-weight: 500;
+  // Inherited, never hardcoded: .height-measure sizes the box this textarea is
+  // clipped to, so any metric that differs between the two shifts where lines
+  // wrap and hides text the caret can no longer reach (#9641).
+  font-weight: inherit;
   font-size: inherit;
   letter-spacing: inherit;
   font-family: var(--font-primary-stack);
@@ -132,7 +145,7 @@
   visibility: hidden;
   pointer-events: none;
   display: block;
-  font-weight: 500;
+  font-weight: inherit;
   font-size: inherit;
   letter-spacing: inherit;
   font-family: var(--font-primary-stack);

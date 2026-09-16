@@ -180,6 +180,13 @@ export interface UploadResult {
    * A newer successful full-state operation clears the barrier.
    */
   blockedByRejectedFullState?: boolean;
+  /**
+   * True when a full-state operation (SYNC_IMPORT / BACKUP_IMPORT) failed with a
+   * retryable error, so it — and every pending op after it — stayed local for the
+   * next sync. Nothing reached the server, so the caller must not claim IN_SYNC.
+   * Distinct from `blockedByRejectedFullState`, which is a permanent rejection.
+   */
+  fullStateUploadDeferred?: boolean;
 }
 
 /**
@@ -259,6 +266,8 @@ export type DownloadResultForRejection =
  */
 export type DownloadCallback = (options?: {
   forceFromSeq0?: boolean;
+  /** See `isReDeliveryRetry` on `OperationLogDownloadService.downloadRemoteOps`. */
+  isReDeliveryRetry?: boolean;
   /** Local full-state boundaries to ignore while processing this recovery download. */
   ignoredLocalFullStateOpIds?: string[];
 }) => Promise<DownloadResultForRejection>;
@@ -278,8 +287,29 @@ export type DownloadCallback = (options?: {
  */
 export type DownloadOutcome =
   | {
-      /** Server was empty/reset — a SYNC_IMPORT was created. Caller must upload. */
+      /**
+       * Server was empty/reset — a SYNC_IMPORT was created (or an unsynced
+       * SERVER_MIGRATION import was already pending). Caller must upload.
+       */
       kind: 'server_migration_handled';
+    }
+  | {
+      /**
+       * Seeding ran but nothing shipped the local state, so the caller must
+       * skip this cycle's upload — accepting the client's ordinary ops would
+       * settle it onto a server that lacks the base state they reference: for a
+       * fresh / never-synced genesis client hasSyncedOps() would flip and strand
+       * its state for good (#9921); for a synced client on a reset server
+       * lastServerSeq would advance and the migration check would never fire
+       * again (#9932). The next cycle re-downloads and re-evaluates.
+       *
+       * Not every skip reaches here. On the server-reset branch only a genuine
+       * failure to ship existing state does (validation failed, no client id).
+       * A server that is no longer empty means someone seeded it, so a base
+       * state exists and the ordinary upload proceeds; blocking it there would
+       * strand the cycle with the client's ops still pending (#9932).
+       */
+      kind: 'server_migration_skipped';
     }
   | {
       /** No new operations on server. */
@@ -336,6 +366,8 @@ export type UploadOutcome =
       encryptionRequiredKeyMissing?: boolean;
       /** Pending ops depend on an explicit full-state baseline the server rejected. */
       blockedByRejectedFullState?: boolean;
+      /** A full-state op hit a retryable server error; nothing was uploaded this round. */
+      fullStateUploadDeferred?: boolean;
     }
   | {
       /** User cancelled a piggybacked SYNC_IMPORT conflict dialog. */

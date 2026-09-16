@@ -35,7 +35,6 @@ import {
   expandFadeInOnlyAnimation,
 } from '../../../ui/animations/expand.ani';
 import { fadeAnimation } from '../../../ui/animations/fade.ani';
-import { swirlAnimation } from '../../../ui/animations/swirl-in-out.ani';
 import { DialogTimeEstimateComponent } from '../dialog-time-estimate/dialog-time-estimate.component';
 import { MatDialog } from '@angular/material/dialog';
 import { TaskRepeatCfgService } from '../../task-repeat-cfg/task-repeat-cfg.service';
@@ -106,7 +105,6 @@ import { TaskContextMenuComponent } from '../task-context-menu/task-context-menu
     expandFadeAnimation,
     expandFadeInOnlyAnimation,
     fadeAnimation,
-    swirlAnimation,
   ],
   imports: [
     TaskTitleComponent,
@@ -385,6 +383,8 @@ export class TaskDetailPanelComponent implements OnInit, AfterViewInit, OnDestro
 
   showTimeEstimate = computed(() => !this.task().subTasks?.length);
 
+  hasTimeData = computed(() => !!(this.task().timeSpent || this.task().timeEstimate));
+
   hasAttachments = computed(() => {
     return this.issueAttachments().length > 0 || this.localAttachments().length > 0;
   });
@@ -417,7 +417,7 @@ export class TaskDetailPanelComponent implements OnInit, AfterViewInit, OnDestro
         ? this.T.F.TASK.ADDITIONAL_INFO.DEADLINE_OVERDUE
         : this.T.F.TASK.ADDITIONAL_INFO.DEADLINE_DUE_BY;
     }
-    return this.T.F.TASK.ADDITIONAL_INFO.DEADLINE;
+    return this.T.F.TASK.CMP.SET_DEADLINE;
   });
 
   // EFFECTS
@@ -836,6 +836,18 @@ export class TaskDetailPanelComponent implements OnInit, AfterViewInit, OnDestro
       // panel item then blurs the draft input, whose blur handler closes the
       // draft — leaving "Add subtask" silently broken (#8617/#8630).
       if (this.isAddSubtaskInputVisible()) {
+        return;
+      }
+      // Nor from any other text field the user moved into while this timer was
+      // pending. Escape in the notes editor blurs it and schedules this focus
+      // 150ms out; clicking straight back into the notes inside that window
+      // would otherwise have the caret yanked out again. The panel's own
+      // on-open auto-focus is the second way in: click into the notes before
+      // its delay(50) + 150ms timers fire and the keystrokes that follow land
+      // on a plain <task-detail-item>, where the global handler reads them as
+      // task shortcuts — a typed note scheduled the task instead (#9910).
+      const activeEl = document.activeElement;
+      if (activeEl instanceof HTMLElement && isInputElement(activeEl)) {
         return;
       }
       if (this.task().id === scheduledForTaskId) {

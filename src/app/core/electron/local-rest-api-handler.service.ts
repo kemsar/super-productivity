@@ -1,6 +1,6 @@
 import { Injectable, inject } from '@angular/core';
-import { firstValueFrom } from 'rxjs';
 import { Store } from '@ngrx/store';
+import { firstValueFrom } from 'rxjs';
 import typia from 'typia';
 import { TaskService } from '../../features/tasks/task.service';
 import { Task, TaskWithSubTasks } from '../../features/tasks/task.model';
@@ -10,18 +10,35 @@ import { TagService } from '../../features/tag/tag.service';
 import { TODAY_TAG } from '../../features/tag/tag.const';
 import { DateService } from '../date/date.service';
 import { isTodayWithOffset } from '../../util/is-today.util';
+import { isValidDBDateStr } from '../../util/get-db-date-str';
+
+import { TaskSharedActions } from '../../root-store/meta/task-shared.actions';
+import { getDeadlineAutoPlanFields } from '../../features/tasks/util/get-deadline-auto-plan-fields';
+import {
+  selectCurrentCycle,
+  selectIsBreakTimeUp,
+  selectIsInOvertime,
+  selectIsLongBreak,
+  selectIsRunning,
+  selectIsSessionCompleted,
+  selectMode,
+  selectTimeRemaining,
+  selectTimer,
+} from '../../features/focus-mode/store/focus-mode.selectors';
 import {
   LocalRestApiRequestPayload,
   LocalRestApiResponsePayload,
 } from '../../../../electron/shared-with-frontend/local-rest-api.model';
 import { parseQuickAddText } from '../../../../electron/shared-with-frontend/quick-add-parser';
 import { selectEnabledIssueProviders } from '../../features/issue/store/issue-provider.selectors';
-import { IssueProvider } from '../../features/issue/issue.model';
-import { GitlabApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-api.service';
-import { GitlabGraphqlApiService } from '../../features/issue/providers/gitlab/gitlab-api/gitlab-graphql-api.service';
-import { GitlabCfg } from '../../features/issue/providers/gitlab/gitlab.model';
-import { IssueProviderService } from '../../features/issue/issue-provider.service';
 import { NavigateToTaskService } from '../../core-ui/navigate-to-task/navigate-to-task.service';
+import { GitlabLocalRestApiService } from '../../features/issue/providers/gitlab/gitlab-local-rest-api.service';
+import {
+  createErrorResponse,
+  createSuccessResponse,
+  getQueryParam,
+  getQueryParamAsBoolean,
+} from './local-rest-api-response';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -55,6 +72,9 @@ const ALLOWED_TASK_FIELDS = new Set<string>([
   'dueDay',
   'dueWithTime',
   'plannedAt',
+  'deadlineDay',
+  'deadlineWithTime',
+  'deadlineRemindAt',
 ]);
 
 /**
@@ -102,6 +122,9 @@ interface WritableTaskFields {
   dueDay?: string | null;
   dueWithTime?: number | null;
   plannedAt?: number;
+  deadlineDay?: string | null;
+  deadlineWithTime?: number | null;
+  deadlineRemindAt?: number | null;
 }
 
 type FieldTypeError = { path: string; expected: string };
@@ -125,59 +148,167 @@ const validateWritableFields = (
   };
 };
 
+const DEADLINE_FIELDS = ['deadlineDay', 'deadlineWithTime', 'deadlineRemindAt'] as const;
+
+type DeadlineChange =
+  | {
+      type: 'set';
+      fields: {
+        deadlineDay?: string;
+        deadlineWithTime?: number;
+        deadlineRemindAt?: number;
+      };
+    }
+  | { type: 'clearReminder' }
+  | { type: 'remove' };
+
+const hasOwn = (value: object, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+const validateDeadlineFields = (
+  fields: Partial<WritableTaskFields>,
+): string | undefined => {
+  if (fields.deadlineDay != null && fields.deadlineWithTime != null) {
+    return 'deadlineDay and deadlineWithTime cannot both be set';
+  }
+  if (typeof fields.deadlineDay === 'string' && !isValidDBDateStr(fields.deadlineDay)) {
+    return 'deadlineDay must be a valid YYYY-MM-DD date';
+  }
+  if (fields.deadlineWithTime != null && fields.deadlineWithTime <= 0) {
+    return 'deadlineWithTime must be a positive timestamp';
+  }
+  if (fields.deadlineRemindAt != null && fields.deadlineRemindAt <= 0) {
+    return 'deadlineRemindAt must be a positive timestamp';
+  }
+  return undefined;
+};
+
+/**
+ * Resolves which deadline day/time the request results in, before reminders
+ * are considered. An omitted field carries the task's current value over; a
+ * newly supplied deadline type replaces the other type, matching the
+ * mutual-exclusivity behavior of the deadline meta-reducer.
+ */
+const resolveDeadlineValue = (
+  fields: Partial<WritableTaskFields>,
+  existingTask?: Task,
+): { deadlineDay?: string; deadlineWithTime?: number } => {
+  const hasDay = hasOwn(fields, 'deadlineDay');
+  const hasTime = hasOwn(fields, 'deadlineWithTime');
+  const requestedDay = fields.deadlineDay ?? undefined;
+  const requestedTime = fields.deadlineWithTime ?? undefined;
+  let deadlineDay = hasDay ? requestedDay : (existingTask?.deadlineDay ?? undefined);
+  let deadlineWithTime = hasTime
+    ? requestedTime
+    : (existingTask?.deadlineWithTime ?? undefined);
+  if (requestedDay !== undefined) deadlineWithTime = undefined;
+  if (requestedTime !== undefined) deadlineDay = undefined;
+  return { deadlineDay, deadlineWithTime };
+};
+
+/**
+ * Resolves what happens to the reminder once the resulting deadline is known.
+ * A supplied value wins; a changed deadline without one clears the old
+ * reminder, just like the UI's setDeadline action; an otherwise unchanged
+ * deadline keeps its reminder. An explicit null that would otherwise keep an
+ * existing reminder becomes 'clear' so only the reminder is touched, without
+ * re-planning the deadline.
+ *
+ * Takes the *normalized* existing reminder (see `resolveDeadlineChange`): a
+ * stored `null` means "no reminder", so it must neither be carried over into
+ * `setDeadline` nor turn a `{"deadlineRemindAt": null}` no-op into a
+ * `clearDeadlineReminder` op.
+ */
+const resolveReminderChange = (
+  fields: Partial<WritableTaskFields>,
+  existingDeadlineRemindAt: number | undefined,
+  isDeadlineValueChanged: boolean,
+): { type: 'clear' } | { type: 'value'; remindAt: number | undefined } => {
+  if (!hasOwn(fields, 'deadlineRemindAt')) {
+    return {
+      type: 'value',
+      remindAt: isDeadlineValueChanged ? undefined : existingDeadlineRemindAt,
+    };
+  }
+  const requested = fields.deadlineRemindAt ?? undefined;
+  if (
+    requested === undefined &&
+    !isDeadlineValueChanged &&
+    existingDeadlineRemindAt !== undefined
+  ) {
+    return { type: 'clear' };
+  }
+  return { type: 'value', remindAt: requested };
+};
+
+const resolveDeadlineChange = (
+  fields: Partial<WritableTaskFields>,
+  existingTask?: Task,
+): { ok: true; change?: DeadlineChange } | { ok: false; message: string } => {
+  const hasDay = hasOwn(fields, 'deadlineDay');
+  const hasTime = hasOwn(fields, 'deadlineWithTime');
+  const hasReminder = hasOwn(fields, 'deadlineRemindAt');
+  if (!hasDay && !hasTime && !hasReminder) {
+    return { ok: true };
+  }
+
+  const { deadlineDay, deadlineWithTime } = resolveDeadlineValue(fields, existingTask);
+
+  if (deadlineDay === undefined && deadlineWithTime === undefined) {
+    if (fields.deadlineRemindAt != null) {
+      return { ok: false, message: 'deadlineRemindAt requires a deadline' };
+    }
+    const hasExistingDeadline = Boolean(
+      existingTask?.deadlineDay ||
+      existingTask?.deadlineWithTime ||
+      existingTask?.deadlineRemindAt,
+    );
+    return {
+      ok: true,
+      change: hasExistingDeadline && (hasDay || hasTime) ? { type: 'remove' } : undefined,
+    };
+  }
+
+  const existingDeadlineDay = existingTask?.deadlineDay ?? undefined;
+  const existingDeadlineWithTime = existingTask?.deadlineWithTime ?? undefined;
+  const existingDeadlineRemindAt = existingTask?.deadlineRemindAt ?? undefined;
+  const isDeadlineValueChanged =
+    deadlineDay !== existingDeadlineDay || deadlineWithTime !== existingDeadlineWithTime;
+
+  const reminder = resolveReminderChange(
+    fields,
+    existingDeadlineRemindAt,
+    isDeadlineValueChanged,
+  );
+  if (reminder.type === 'clear') {
+    return { ok: true, change: { type: 'clearReminder' } };
+  }
+  const deadlineRemindAt = reminder.remindAt;
+
+  if (
+    existingTask &&
+    deadlineDay === existingDeadlineDay &&
+    deadlineWithTime === existingDeadlineWithTime &&
+    deadlineRemindAt === existingDeadlineRemindAt
+  ) {
+    return { ok: true };
+  }
+
+  return {
+    ok: true,
+    change: {
+      type: 'set',
+      fields: {
+        ...(deadlineDay !== undefined ? { deadlineDay } : {}),
+        ...(deadlineWithTime !== undefined ? { deadlineWithTime } : {}),
+        ...(deadlineRemindAt !== undefined ? { deadlineRemindAt } : {}),
+      },
+    },
+  };
+};
+
 const firstRejectedField = (body: Record<string, unknown>): string | undefined =>
   REJECTED_TASK_FIELDS.find((field) => field in body);
-
-const getQueryParam = (
-  query: Record<string, string | string[]>,
-  key: string,
-): string | undefined => {
-  const value = query[key];
-  if (value === undefined) return undefined;
-  return Array.isArray(value) ? value[0] : value;
-};
-
-const getQueryParamAsBoolean = (
-  query: Record<string, string | string[]>,
-  key: string,
-  defaultValue: boolean,
-): boolean => {
-  const value = getQueryParam(query, key);
-  if (value === undefined) return defaultValue;
-  return value.toLowerCase() === 'true';
-};
-
-const createErrorResponse = (
-  requestId: string,
-  status: number,
-  code: string,
-  message: string,
-  details?: unknown,
-): LocalRestApiResponsePayload => ({
-  requestId,
-  status,
-  body: {
-    ok: false,
-    error: {
-      code,
-      message,
-      details,
-    },
-  },
-});
-
-const createSuccessResponse = (
-  requestId: string,
-  status: number,
-  data: unknown,
-): LocalRestApiResponsePayload => ({
-  requestId,
-  status,
-  body: {
-    ok: true,
-    data,
-  },
-});
 
 type TaskSource = 'active' | 'archived' | 'all';
 
@@ -213,9 +344,7 @@ export class LocalRestApiHandlerService {
   private readonly _tagService = inject(TagService);
   private readonly _dateService = inject(DateService);
   private readonly _store = inject(Store);
-  private readonly _gitlabApi = inject(GitlabApiService);
-  private readonly _gitlabGraphqlApi = inject(GitlabGraphqlApiService);
-  private readonly _issueProviderService = inject(IssueProviderService);
+  private readonly _gitlabRestApi = inject(GitlabLocalRestApiService);
 
   // Exact-match route table. New endpoints add an entry here instead of
   // another `if` branch on the router — keeps _routeRequest's cognitive
@@ -226,6 +355,7 @@ export class LocalRestApiHandlerService {
     handle: SimpleRouteHandler;
   }> = [
     { method: 'GET', path: '/status', handle: (rid) => this._handleGetStatus(rid) },
+    { method: 'GET', path: '/focus', handle: (rid) => this._handleGetFocus(rid) },
     {
       method: 'GET',
       path: '/task-control/current',
@@ -275,30 +405,57 @@ export class LocalRestApiHandlerService {
     {
       method: 'GET',
       path: '/gitlab/provider-for-project',
-      handle: (rid, _body, q) => this._handleGitlabProviderForProject(rid, q),
+      handle: (rid, _body, q) => this._gitlabRestApi.providerForProject(rid, q),
     },
     {
       method: 'GET',
       path: '/gitlab/users',
-      handle: (rid, _body, q) => this._handleGitlabUsers(rid, q),
+      handle: (rid, _body, q) => this._gitlabRestApi.users(rid, q),
     },
     {
       method: 'GET',
       path: '/gitlab/milestones',
-      handle: (rid, _body, q) => this._handleGitlabMilestones(rid, q),
+      handle: (rid, _body, q) => this._gitlabRestApi.milestones(rid, q),
     },
     {
       method: 'GET',
       path: '/gitlab/labels',
-      handle: (rid, _body, q) => this._handleGitlabLabels(rid, q),
+      handle: (rid, _body, q) => this._gitlabRestApi.labels(rid, q),
     },
     {
       method: 'GET',
       path: '/gitlab/statuses',
-      handle: (rid, _body, q) => this._handleGitlabStatuses(rid, q),
+      handle: (rid, _body, q) => this._gitlabRestApi.statuses(rid, q),
     },
   ];
   private _isInitialized = false;
+
+  private _dispatchDeadlineChange(taskId: string, change: DeadlineChange): void {
+    if (change.type === 'clearReminder') {
+      this._store.dispatch(TaskSharedActions.clearDeadlineReminder({ taskId }));
+      return;
+    }
+
+    if (change.type === 'remove') {
+      this._store.dispatch(
+        TaskSharedActions.removeDeadline({ taskId, isSkipSnack: true }),
+      );
+      return;
+    }
+
+    this._store.dispatch(
+      TaskSharedActions.setDeadline({
+        taskId,
+        ...change.fields,
+        ...getDeadlineAutoPlanFields(
+          this._dateService,
+          change.fields.deadlineDay,
+          change.fields.deadlineWithTime,
+        ),
+        isSkipSnack: true,
+      }),
+    );
+  }
 
   init(): void {
     if (this._isInitialized || !window.ea?.onLocalRestApiRequest) {
@@ -364,6 +521,37 @@ export class LocalRestApiHandlerService {
       currentTask,
       currentTaskId: currentTask?.id ?? null,
       taskCount: allTasks.length,
+    });
+  }
+
+  private async _handleGetFocus(requestId: string): Promise<LocalRestApiResponsePayload> {
+    const state = await firstValueFrom(this._store);
+    const timer = selectTimer(state);
+    const mode = selectMode(state);
+    const cycle = selectCurrentCycle(state);
+    const isRunning = selectIsRunning(state);
+    const isBreakTimeUp = selectIsBreakTimeUp(state);
+    const isLongBreak = selectIsLongBreak(state);
+    const remainingMs = selectTimeRemaining(state);
+    const isSessionDone = selectIsSessionCompleted(state);
+    const isOvertime = selectIsInOvertime(state);
+
+    return createSuccessResponse(requestId, 200, {
+      mode,
+      cycle,
+      isSessionDone,
+      timer:
+        timer.purpose === null
+          ? null
+          : {
+              purpose: timer.purpose,
+              status: isRunning ? 'running' : isBreakTimeUp ? 'done' : 'paused',
+              isOvertime,
+              isLongBreak,
+              elapsedMs: timer.elapsed,
+              remainingMs,
+              durationMs: timer.duration,
+            },
     });
   }
 
@@ -531,6 +719,35 @@ export class LocalRestApiHandlerService {
       );
     }
 
+    const deadlineValidationError = validateDeadlineFields(additionalFields);
+    if (deadlineValidationError) {
+      return createErrorResponse(
+        requestId,
+        400,
+        'INVALID_INPUT',
+        deadlineValidationError,
+      );
+    }
+
+    const deadlineFields = Object.fromEntries(
+      DEADLINE_FIELDS.filter((field) => hasOwn(additionalFields, field)).map((field) => [
+        field,
+        additionalFields[field],
+      ]),
+    ) as Partial<WritableTaskFields>;
+    const deadlineResolution = resolveDeadlineChange(deadlineFields);
+    if (!deadlineResolution.ok) {
+      return createErrorResponse(
+        requestId,
+        400,
+        'INVALID_INPUT',
+        deadlineResolution.message,
+      );
+    }
+    for (const field of DEADLINE_FIELDS) {
+      delete additionalFields[field];
+    }
+
     if ('parentId' in body) {
       if (typeof body.parentId !== 'string' || !body.parentId) {
         return createErrorResponse(
@@ -574,6 +791,9 @@ export class LocalRestApiHandlerService {
         title,
         ...additionalFields,
       });
+      if (deadlineResolution.change?.type === 'set') {
+        this._dispatchDeadlineChange(subTaskId, deadlineResolution.change);
+      }
       const createdSubTask = await this._getTaskById(subTaskId);
       return createSuccessResponse(requestId, 201, createdSubTask);
     }
@@ -606,6 +826,9 @@ export class LocalRestApiHandlerService {
       finalTitle = stripQuickAddLabelTokens(title, parsed.labels) || title;
     }
     const taskId = this._taskService.add(finalTitle, false, fields, false, true);
+    if (deadlineResolution.change?.type === 'set') {
+      this._dispatchDeadlineChange(taskId, deadlineResolution.change);
+    }
     const createdTask = await this._getTaskById(taskId);
 
     return createSuccessResponse(requestId, 201, createdTask);
@@ -711,12 +934,41 @@ export class LocalRestApiHandlerService {
           );
         }
 
+        const deadlineValidationError = validateDeadlineFields(changes);
+        if (deadlineValidationError) {
+          return createErrorResponse(
+            requestId,
+            400,
+            'INVALID_INPUT',
+            deadlineValidationError,
+          );
+        }
+
         const task = await this._getTaskById(taskId);
         if (!task) {
           return createErrorResponse(requestId, 404, 'TASK_NOT_FOUND', 'Task not found');
         }
 
-        if (Object.prototype.hasOwnProperty.call(changes, 'projectId')) {
+        const deadlineFields = Object.fromEntries(
+          DEADLINE_FIELDS.filter((field) => hasOwn(changes, field)).map((field) => [
+            field,
+            changes[field],
+          ]),
+        ) as Partial<WritableTaskFields>;
+        const deadlineResolution = resolveDeadlineChange(deadlineFields, task);
+        if (!deadlineResolution.ok) {
+          return createErrorResponse(
+            requestId,
+            400,
+            'INVALID_INPUT',
+            deadlineResolution.message,
+          );
+        }
+        for (const field of DEADLINE_FIELDS) {
+          delete changes[field];
+        }
+
+        if (hasOwn(changes, 'projectId')) {
           const targetProjectId = changes.projectId;
           if (typeof targetProjectId !== 'string' || !targetProjectId.trim()) {
             return createErrorResponse(
@@ -756,7 +1008,12 @@ export class LocalRestApiHandlerService {
           }
         }
 
-        this._taskService.update(taskId, changes);
+        if (Object.keys(changes).length > 0) {
+          this._taskService.update(taskId, changes);
+        }
+        if (deadlineResolution.change) {
+          this._dispatchDeadlineChange(taskId, deadlineResolution.change);
+        }
         return createSuccessResponse(requestId, 200, await this._getTaskById(taskId));
       }
 
@@ -880,290 +1137,5 @@ export class LocalRestApiHandlerService {
   ): Promise<TaskWithSubTasks | undefined> {
     const task = await firstValueFrom(this._taskService.getByIdWithSubTaskData$(taskId));
     return task?.id === taskId ? task : undefined;
-  }
-
-  // --- GitLab autocomplete plumbing (issue #19) -------------------------
-  //
-  // These endpoints exist so the quick-add overlay's autocomplete
-  // dropdowns for @user and ##milestone can hit GitLab without the
-  // overlay HTML needing to know anything about issue-provider config,
-  // tokens, or REST base URLs. The overlay POSTs debounced GETs; the
-  // handler looks up the caller-specified provider, then uses that
-  // provider's token to hit GitLab's REST API.
-
-  /**
-   * True if `provider` is the intended remote for a task added to
-   * `spProjectId`. Matches the private helper in the two-way-sync effect
-   * (#26). Duplicated here rather than exposed via a shared util because
-   * the effect's version handles slightly more shapes (plugin providers);
-   * this one only needs the two GitLab paths.
-   */
-  private _providerMatchesSpProject(
-    provider: IssueProvider,
-    spProjectId: string,
-  ): boolean {
-    if (provider.defaultProjectId === spProjectId) return true;
-    const mapping = (
-      provider as unknown as {
-        treeImportMapping?: Record<string, { spProjectId: string }>;
-      }
-    ).treeImportMapping;
-    if (!mapping) return false;
-    return Object.values(mapping).some((e) => e.spProjectId === spProjectId);
-  }
-
-  /**
-   * Returns the GitLab path the given SP project maps to under this
-   * provider — either the provider's `cfg.project` (direct project-mode)
-   * or the tree-import mapping key whose SP-side id matches.
-   */
-  private _resolveGitlabPath(
-    provider: IssueProvider,
-    cfg: GitlabCfg,
-    spProjectId: string,
-  ): string | null {
-    if (provider.defaultProjectId === spProjectId && cfg.project) {
-      return cfg.project;
-    }
-    const mapping = cfg.treeImportMapping ?? {};
-    const entry = Object.entries(mapping).find(([, e]) => e.spProjectId === spProjectId);
-    return entry ? entry[0] : null;
-  }
-
-  /**
-   * GET /gitlab/provider-for-project?spProjectId=X
-   *
-   * Given an SP project id (as picked by the overlay's !project chip),
-   * returns the enabled GitLab provider that would sync it plus the
-   * GitLab path that provider maps this SP project to. The overlay
-   * caches this for the entry so subsequent users/milestones calls
-   * carry `providerId` + `gitlabPath` without a lookup per keystroke.
-   * Returns `null` under `.data.provider` if no GitLab provider matches
-   * — caller uses that to hide the dropdowns gracefully instead of
-   * spamming failed lookups.
-   */
-  private async _handleGitlabProviderForProject(
-    requestId: string,
-    query: Record<string, string | string[]>,
-  ): Promise<LocalRestApiResponsePayload> {
-    const spProjectId = getQueryParam(query, 'spProjectId');
-    if (!spProjectId) {
-      return createErrorResponse(
-        requestId,
-        400,
-        'INVALID_INPUT',
-        'spProjectId query parameter is required',
-      );
-    }
-    const providers = await firstValueFrom(
-      this._store.select(selectEnabledIssueProviders),
-    );
-    const gitlabProvider = providers.find(
-      (p) =>
-        p.issueProviderKey === 'GITLAB' && this._providerMatchesSpProject(p, spProjectId),
-    );
-    if (!gitlabProvider) {
-      return createSuccessResponse(requestId, 200, { provider: null });
-    }
-    const cfg = await firstValueFrom(
-      this._issueProviderService.getCfgOnce$(gitlabProvider.id, 'GITLAB'),
-    );
-    const gitlabPath = this._resolveGitlabPath(gitlabProvider, cfg, spProjectId);
-    return createSuccessResponse(requestId, 200, {
-      provider: {
-        id: gitlabProvider.id,
-        gitlabPath,
-      },
-    });
-  }
-
-  /**
-   * GET /gitlab/users?providerId=X&search=Y
-   *
-   * Live-search GitLab users by username fragment. Uses the mapped
-   * provider's stored token — the overlay never sees or handles it.
-   * `search` is required (empty returns []); this stays under 10 results
-   * so an unqualified search doesn't spam the dropdown with the whole
-   * instance's userbase.
-   */
-  private async _handleGitlabUsers(
-    requestId: string,
-    query: Record<string, string | string[]>,
-  ): Promise<LocalRestApiResponsePayload> {
-    const providerId = getQueryParam(query, 'providerId');
-    const search = getQueryParam(query, 'search')?.trim() ?? '';
-    if (!providerId) {
-      return createErrorResponse(
-        requestId,
-        400,
-        'INVALID_INPUT',
-        'providerId query parameter is required',
-      );
-    }
-    if (!search) {
-      return createSuccessResponse(requestId, 200, []);
-    }
-    const cfg = await firstValueFrom(
-      this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
-    );
-    // Fuzzy search across username / name / email — GitLab's `?search=`.
-    // The dropdown wants matches for typed fragments (`kev` → `kevin`,
-    // `kmiller`, etc.), not the strict-username-lookup the auto-create
-    // resolver uses.
-    const users = await firstValueFrom(this._gitlabApi.searchUsers$(search, cfg));
-    return createSuccessResponse(requestId, 200, users);
-  }
-
-  /**
-   * GET /gitlab/milestones?providerId=X&spProjectId=Z[&search=Y]
-   *
-   * Lists milestones for the GitLab project the SP project maps to.
-   * `search` is optional — an empty search returns the whole (open)
-   * milestone list, which is what the overlay shows on the first
-   * dropdown open. Filtering happens client-side after that for
-   * responsiveness.
-   */
-  private async _handleGitlabMilestones(
-    requestId: string,
-    query: Record<string, string | string[]>,
-  ): Promise<LocalRestApiResponsePayload> {
-    const providerId = getQueryParam(query, 'providerId');
-    const spProjectId = getQueryParam(query, 'spProjectId');
-    if (!providerId || !spProjectId) {
-      return createErrorResponse(
-        requestId,
-        400,
-        'INVALID_INPUT',
-        'providerId and spProjectId query parameters are required',
-      );
-    }
-    const providers = await firstValueFrom(
-      this._store.select(selectEnabledIssueProviders),
-    );
-    const provider = providers.find((p) => p.id === providerId);
-    if (!provider || provider.issueProviderKey !== 'GITLAB') {
-      return createErrorResponse(
-        requestId,
-        404,
-        'PROVIDER_NOT_FOUND',
-        `No GitLab provider with id ${providerId}`,
-      );
-    }
-    const cfg = await firstValueFrom(
-      this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
-    );
-    const gitlabPath = this._resolveGitlabPath(provider, cfg, spProjectId);
-    if (!gitlabPath) {
-      return createSuccessResponse(requestId, 200, []);
-    }
-    // Return the full milestone list (active + closed). The overlay
-    // filters client-side by the typed prefix — GitLab's server-side
-    // `?title=` is exact-match, and `?search=` is fuzzy over both title
-    // and description, so neither is a clean fit for a prefix-typing
-    // dropdown. Client-side prefix over the full list gives the
-    // Todoist-familiar experience.
-    const list = await firstValueFrom(this._gitlabApi.listMilestones$(gitlabPath, cfg));
-    return createSuccessResponse(requestId, 200, list);
-  }
-
-  /**
-   * GET /gitlab/labels?providerId=X&spProjectId=Z
-   *
-   * The mapped GitLab project's label list (names only). Powers the
-   * overlay's `#` autocomplete dropdown; the overlay filters client-side
-   * by the typed prefix. Empty list when the SP project maps to no GitLab
-   * path.
-   */
-  private async _handleGitlabLabels(
-    requestId: string,
-    query: Record<string, string | string[]>,
-  ): Promise<LocalRestApiResponsePayload> {
-    const providerId = getQueryParam(query, 'providerId');
-    const spProjectId = getQueryParam(query, 'spProjectId');
-    if (!providerId || !spProjectId) {
-      return createErrorResponse(
-        requestId,
-        400,
-        'INVALID_INPUT',
-        'providerId and spProjectId query parameters are required',
-      );
-    }
-    const providers = await firstValueFrom(
-      this._store.select(selectEnabledIssueProviders),
-    );
-    const provider = providers.find((p) => p.id === providerId);
-    if (!provider || provider.issueProviderKey !== 'GITLAB') {
-      return createErrorResponse(
-        requestId,
-        404,
-        'PROVIDER_NOT_FOUND',
-        `No GitLab provider with id ${providerId}`,
-      );
-    }
-    const cfg = await firstValueFrom(
-      this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
-    );
-    const gitlabPath = this._resolveGitlabPath(provider, cfg, spProjectId);
-    if (!gitlabPath) {
-      return createSuccessResponse(requestId, 200, []);
-    }
-    const list = await firstValueFrom(this._gitlabApi.listLabels$(gitlabPath, cfg));
-    return createSuccessResponse(requestId, 200, list);
-  }
-
-  /**
-   * GET /gitlab/statuses?providerId=X&spProjectId=Z
-   *
-   * The mapped GitLab project's custom work-item Status options (the
-   * configurable per-lifecycle statuses — To do / In progress / Done /
-   * ..., distinct from the universal issue `state`). Powers the overlay's
-   * `>` dropdown. Returns `[]` when the instance doesn't expose the Status
-   * widget (CE / no license / older GitLab / group-mode path that GraphQL
-   * can't resolve) or the query errors — the overlay then falls back to
-   * the universal open/closed/done options.
-   */
-  private async _handleGitlabStatuses(
-    requestId: string,
-    query: Record<string, string | string[]>,
-  ): Promise<LocalRestApiResponsePayload> {
-    const providerId = getQueryParam(query, 'providerId');
-    const spProjectId = getQueryParam(query, 'spProjectId');
-    if (!providerId || !spProjectId) {
-      return createErrorResponse(
-        requestId,
-        400,
-        'INVALID_INPUT',
-        'providerId and spProjectId query parameters are required',
-      );
-    }
-    const providers = await firstValueFrom(
-      this._store.select(selectEnabledIssueProviders),
-    );
-    const provider = providers.find((p) => p.id === providerId);
-    if (!provider || provider.issueProviderKey !== 'GITLAB') {
-      return createErrorResponse(
-        requestId,
-        404,
-        'PROVIDER_NOT_FOUND',
-        `No GitLab provider with id ${providerId}`,
-      );
-    }
-    const cfg = await firstValueFrom(
-      this._issueProviderService.getCfgOnce$(providerId, 'GITLAB'),
-    );
-    const gitlabPath = this._resolveGitlabPath(provider, cfg, spProjectId);
-    if (!gitlabPath) {
-      return createSuccessResponse(requestId, 200, []);
-    }
-    try {
-      const statuses = await firstValueFrom(
-        this._gitlabGraphqlApi.getAllowedStatuses$(cfg, gitlabPath),
-      );
-      return createSuccessResponse(requestId, 200, statuses);
-    } catch {
-      // GraphQL declined (no widget / no license / disabled endpoint) —
-      // an empty list tells the overlay to use its static fallback.
-      return createSuccessResponse(requestId, 200, []);
-    }
   }
 }

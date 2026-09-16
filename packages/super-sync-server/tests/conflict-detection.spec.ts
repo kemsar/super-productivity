@@ -1,7 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { uuidv7 } from 'uuidv7';
 import { Prisma } from '@prisma/client';
-import { testState, resetTestState } from './sync.service.test-state';
+import {
+  testState,
+  resetTestState,
+  isLatestCausalFullStateQuery,
+  latestCausalFullStateRows,
+  rawQueryValues,
+} from './sync.service.test-state';
 
 // Mock the database module with Prisma mocks
 vi.mock('../src/db', async () => {
@@ -180,6 +186,15 @@ vi.mock('../src/db', async () => {
     // Upload transaction writes the storage counter atomically via $executeRaw.
     $executeRaw: vi.fn().mockResolvedValue(0),
     $queryRaw: vi.fn().mockImplementation(async (strings: any, ...params: unknown[]) => {
+      // The download path's newest-causal-full-state lookup ships as a pre-built
+      // `Prisma.Sql` so its op_type values stay literals, so it arrives as ONE object
+      // argument rather than a tagged template — see rawQueryText.
+      if (isLatestCausalFullStateQuery(strings)) {
+        return latestCausalFullStateRows(
+          state.operations,
+          rawQueryValues(strings, params),
+        );
+      }
       const sql = Array.isArray(strings) ? strings.join('') : String(strings);
       // Array branch of the single-entity conflict lookup: MAX(server_seq) over
       // `entity_ids @> ARRAY[id]`, kept separate from the scalar findFirst above.
@@ -215,15 +230,43 @@ vi.mock('../src/db', async () => {
         return [{ lastSeq: state.userSyncStates.get(txUserId)?.lastSeq ?? 0 }];
       }
 
-      // Anything left must be the batched multi-entity conflict lookup. Assert that
+      // Anything left must be the multi-entity conflict lookup. Assert that
       // rather than assuming it: falling through and reinterpreting an unrelated
       // query as this one is how a mock silently answers a call it never modelled.
-      if (!sql.includes('DISTINCT ON')) {
+      // Key on detect's own CTE (`scalar_hits`) — otherwise an unmodelled query
+      // lands here, finds no bare string to read entityType from, matches no ops
+      // and silently reports "no conflict".
+      if (!sql.includes('scalar_hits')) {
         throw new Error(`Unmocked raw query in tx: ${sql}`);
       }
-      const [userId, entityType, entityIdsSql] = params as [number, string, Prisma.Sql];
+      // Located by shape, not by position: #9503 reordered the params (and repeated
+      // userId/entityType), so a positional destructure is wrong. Shape lookup is
+      // type-ambiguous, though, so assert the shape instead of trusting it — a future
+      // numeric param (a LIMIT, a schema version) would otherwise silently rebind
+      // userId and quietly disable the tenant scoping this mock exists to model.
+      const numberParams = params.filter((p): p is number => typeof p === 'number');
+      const stringParams = params.filter((p): p is string => typeof p === 'string');
+      if (new Set(numberParams).size !== 1 || new Set(stringParams).size !== 1) {
+        throw new Error(
+          `Batched conflict query params no longer identify userId/entityType by shape: ` +
+            `${numberParams.length} numbers, ${stringParams.length} strings`,
+        );
+      }
+      const userId = numberParams[0];
+      const entityType = stringParams[0];
+      // `values.length > 0` is load-bearing: the shared array-branch CTE is also a
+      // Prisma.Sql, with an EMPTY values array, so a bare Array.isArray check would
+      // match it if fragment order ever changed — and an empty id set matches no op,
+      // i.e. a silent "no conflict" for every entity.
+      const entityIdsSql = params.find(
+        (p): p is Prisma.Sql =>
+          !!p &&
+          typeof p === 'object' &&
+          Array.isArray((p as Prisma.Sql).values) &&
+          (p as Prisma.Sql).values.length > 0,
+      );
       state.batchConflictQueryCount++;
-      if (!Array.isArray(entityIdsSql.values)) {
+      if (!entityIdsSql || !Array.isArray(entityIdsSql.values)) {
         throw new Error(
           'Expected batched conflict query entity IDs to be passed via Prisma.join(...)',
         );
@@ -234,7 +277,7 @@ vi.mock('../src/db', async () => {
         ),
       );
       // An op covers every entity in its entity_ids set UNION its scalar
-      // entity_id — mirrors the `entity_ids || ARRAY[entity_id]` unnest. The
+      // entity_id — mirrors the array branch UNION ALL the scalar branch. The
       // scalar is always folded in (not just for empty/pre-migration rows) so a
       // divergent scalar entity_id is never missed; the Set below dedupes the
       // common entity_id = entityIds[0] overlap. (#8334)
@@ -1050,11 +1093,9 @@ describe('Conflict Detection', () => {
       });
     });
 
-    // NOTE: with the default (non-batch) upload config this exercises
-    // `detectConflictForEntities`. The `prefetchLatestEntityOpsForBatch` variant
-    // (batchUpload=true) shares the same entity_ids matching SQL but is not driven
-    // here; its raw query is validated separately against real Postgres.
-    it('#8334 batch path: incoming multi-entity op hits a non-first stored entity', async () => {
+    // NOTE: this exercises `detectConflictForEntities`; its raw query is
+    // validated separately against real Postgres.
+    it('#8334 multi-entity op: incoming op hits a non-first stored entity', async () => {
       const service = getSyncService();
 
       const stored = await service.uploadOps(userId, clientA, [

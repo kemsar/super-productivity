@@ -5,7 +5,7 @@ import { TaskService } from '../../features/tasks/task.service';
 import { SnackService } from '../../core/snack/snack.service';
 import { DateService } from '../../core/date/date.service';
 import { LayoutService } from '../layout/layout.service';
-import { Task } from '../../features/tasks/task.model';
+import { HideSubTasksMode, Task } from '../../features/tasks/task.model';
 import { INBOX_PROJECT } from '../../features/project/project.const';
 import { Project } from '../../features/project/project.model';
 import { MockStore, provideMockStore } from '@ngrx/store/testing';
@@ -50,12 +50,16 @@ describe('NavigateToTaskService', () => {
 
   // The service reads project/task membership straight from the store, so the
   // store IS the fixture — there is no second mock to keep in sync.
-  const setStoreState = (tasks: Task[], projects: Project[]): void => {
+  const setStoreState = (
+    tasks: Task[],
+    projects: Project[],
+    currentTaskId: string | null = null,
+  ): void => {
     store.setState({
       [TASK_FEATURE_NAME]: {
         ids: tasks.map(({ id }) => id),
         entities: Object.fromEntries(tasks.map((task) => [task.id, task])),
-        currentTaskId: null,
+        currentTaskId,
         selectedTaskId: null,
         taskDetailTargetPanel: null,
         isDataLoaded: true,
@@ -78,12 +82,16 @@ describe('NavigateToTaskService', () => {
       'getByIdFromEverywhere',
       'getArchivedTasks',
       'update',
+      'showSubTasks',
     ]);
     const snackService = jasmine.createSpyObj('SnackService', ['open']);
     const dateService = jasmine.createSpyObj('DateService', ['isToday', 'todayStr']);
     dateService.todayStr.and.returnValue(TODAY_STR);
     dateService.isToday.and.returnValue(false);
-    layoutService = jasmine.createSpyObj('LayoutService', ['focusTaskInViewWhenReady']);
+    layoutService = jasmine.createSpyObj('LayoutService', [
+      'focusTaskInViewWhenReady',
+      'highlightTaskBriefly',
+    ]);
 
     const routerSpy = jasmine.createSpyObj('Router', ['navigate']);
     routerSpy.navigate.and.resolveTo(true);
@@ -124,6 +132,9 @@ describe('NavigateToTaskService', () => {
   const expectNoStateChange = (): void => {
     expect(taskService.update).not.toHaveBeenCalled();
     expect(store.dispatch).not.toHaveBeenCalled();
+    // showSubTasks emits a synced updateTaskUi op, so navigating must not call
+    // it unless the target is genuinely hidden by its parent. (#8780)
+    expect(taskService.showSubTasks).not.toHaveBeenCalled();
   };
 
   it('self-heals an orphan task (no project, no tags, not due today) into the Inbox and navigates there (#8780)', async () => {
@@ -341,7 +352,11 @@ describe('NavigateToTaskService', () => {
     );
   });
 
-  it('opens the backlog when navigating to a subtask whose parent is there', async () => {
+  // Asserts the param only. It does NOT prove the task ends up focused: the
+  // backlog renders outside `#splitTopEl`, which both reveal loops require, so a
+  // backlog row is shown but never scrolled to. Pre-existing gap, see the note in
+  // `_focusTaskElement`. (#8780)
+  it('sends isInBacklog when navigating to a subtask whose parent is in the backlog', async () => {
     const parent = createTask({
       id: 'backlog-parent',
       projectId: 'p1',
@@ -393,5 +408,210 @@ describe('NavigateToTaskService', () => {
       [`/project/${INBOX_PROJECT.id}/tasks`],
       jasmine.anything(),
     );
+  });
+
+  /**
+   * The attention highlight is scoped to navigations the user asked for, i.e.
+   * global search. Every other caller of `navigate()` — the tracked-task pill,
+   * the "go to task" snack actions, issue creation and the calendar banner —
+   * must keep the plain focus behavior. (#5476)
+   */
+  describe('search intent (#5476)', () => {
+    it('carries isFromSearch into the route-change query params when set', async () => {
+      const task = createTask({ id: 's1', projectId: 'p1', tagIds: [] });
+      setNavigatedTask(task, [createProject('p1', ['s1'])]);
+
+      await service.navigate('s1', false, { isFromSearch: true });
+
+      expect(router.navigate).toHaveBeenCalledWith(
+        ['/project/p1/tasks'],
+        jasmine.objectContaining({
+          queryParams: jasmine.objectContaining({ focusItem: 's1', isFromSearch: true }),
+        }),
+      );
+    });
+
+    it('omits isFromSearch for every other caller', async () => {
+      const task = createTask({ id: 's2', projectId: 'p1', tagIds: [] });
+      setNavigatedTask(task, [createProject('p1', ['s2'])]);
+
+      await service.navigate('s2');
+
+      const queryParams = (
+        router.navigate.calls.mostRecent().args[1] as {
+          queryParams: Record<string, unknown>;
+        }
+      ).queryParams;
+      expect(queryParams.focusItem).toBe('s2');
+      expect('isFromSearch' in queryParams).toBeFalse();
+    });
+
+    it('highlights the revealed row on a same-context search jump', async () => {
+      router.url = '/project/p1/tasks';
+      const task = createTask({ id: 's3', projectId: 'p1', tagIds: [] });
+      setNavigatedTask(task, [createProject('p1', ['s3'])]);
+      const el = document.createElement('div');
+      layoutService.focusTaskInViewWhenReady.and.callFake((_taskId, onSuccess) =>
+        onSuccess?.(el),
+      );
+
+      await service.navigate('s3', false, { isFromSearch: true });
+
+      expect(layoutService.highlightTaskBriefly).toHaveBeenCalledOnceWith(el);
+    });
+
+    it('does not highlight a same-context jump from any other caller', async () => {
+      router.url = '/project/p1/tasks';
+      const task = createTask({ id: 's4', projectId: 'p1', tagIds: [] });
+      setNavigatedTask(task, [createProject('p1', ['s4'])]);
+      const el = document.createElement('div');
+      layoutService.focusTaskInViewWhenReady.and.callFake((_taskId, onSuccess) =>
+        onSuccess?.(el),
+      );
+
+      await service.navigate('s4');
+
+      expect(layoutService.focusTaskInViewWhenReady).toHaveBeenCalled();
+      expect(layoutService.highlightTaskBriefly).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('collapsed parent (#8780)', () => {
+    /**
+     * A collapsed parent renders no row for its subtasks, so without expanding
+     * it the reveal step polls for an element that can never appear and gives up
+     * silently — the failure in the reporter's 2026-08-11 trace.
+     */
+    const setUpSubTask = (
+      parentChanges: Partial<Task>,
+      childChanges: Partial<Task> = {},
+      currentTaskId: string | null = null,
+    ): Task => {
+      const parent = createTask({
+        id: 'parent-1',
+        projectId: 'p1',
+        subTaskIds: ['child-1'],
+        ...parentChanges,
+      });
+      const child = createTask({
+        id: 'child-1',
+        parentId: parent.id,
+        projectId: parent.projectId,
+        ...childChanges,
+      });
+      setStoreState([parent, child], [createProject('p1', [parent.id])], currentTaskId);
+      taskService.getByIdFromEverywhere.and.callFake((id: string) =>
+        Promise.resolve(id === child.id ? child : parent),
+      );
+      return child;
+    };
+
+    it('expands a parent hiding ALL subtasks before navigating', async () => {
+      const child = setUpSubTask({ _hideSubTasksMode: HideSubTasksMode.HideAll });
+
+      await service.navigate(child.id);
+
+      expect(taskService.showSubTasks).toHaveBeenCalledOnceWith('parent-1');
+      expect(router.navigate).toHaveBeenCalledWith(
+        ['/project/p1/tasks'],
+        jasmine.objectContaining({
+          queryParams: jasmine.objectContaining({ focusItem: child.id }),
+        }),
+      );
+    });
+
+    it('expands a parent hiding DONE subtasks when the target is done', async () => {
+      const child = setUpSubTask(
+        { _hideSubTasksMode: HideSubTasksMode.HideDone },
+        { isDone: true },
+      );
+
+      await service.navigate(child.id);
+
+      expect(taskService.showSubTasks).toHaveBeenCalledOnceWith('parent-1');
+    });
+
+    it('leaves a HideDone parent alone when the target is not done', async () => {
+      // The row already renders, so expanding would emit a synced op for nothing.
+      const child = setUpSubTask(
+        { _hideSubTasksMode: HideSubTasksMode.HideDone },
+        { isDone: false },
+      );
+
+      await service.navigate(child.id);
+
+      expect(taskService.showSubTasks).not.toHaveBeenCalled();
+    });
+
+    it('leaves a HideAll parent alone when the target is the TRACKED task', async () => {
+      // filterDoneTasks exempts the tracked task from HideAll, so its row is
+      // already on screen. The tracked-task pill navigates to exactly this task,
+      // so without the guard every pill click would emit a synced op and destroy
+      // the user's collapse state on every device.
+      const child = setUpSubTask(
+        { _hideSubTasksMode: HideSubTasksMode.HideAll },
+        {},
+        'child-1',
+      );
+
+      await service.navigate(child.id);
+
+      expect(taskService.showSubTasks).not.toHaveBeenCalled();
+    });
+
+    it('still expands for a NON-tracked sibling under a HideAll parent', async () => {
+      const child = setUpSubTask(
+        { _hideSubTasksMode: HideSubTasksMode.HideAll },
+        {},
+        'some-other-task',
+      );
+
+      await service.navigate(child.id);
+
+      expect(taskService.showSubTasks).toHaveBeenCalledOnceWith('parent-1');
+    });
+
+    it('expands for an out-of-enum hide mode, which the template still hides', async () => {
+      // The template binds `isHideAll="!!t._hideSubTasksMode"`, so ANY truthy
+      // value hides the subtask. A strict `=== HideAll` check would miss legacy
+      // or corrupt values and leave the reveal failing exactly as it did before.
+      const child = setUpSubTask({
+        _hideSubTasksMode: 99 as unknown as HideSubTasksMode,
+      });
+
+      await service.navigate(child.id);
+
+      expect(taskService.showSubTasks).toHaveBeenCalledWith('parent-1');
+    });
+
+    it('expands in the same-context branch too, where no route change happens', async () => {
+      // The expansion runs before the same-context check, so it must apply on
+      // the branch that only polls the DOM instead of routing.
+      router.url = '/project/p1/tasks';
+      const child = setUpSubTask({ _hideSubTasksMode: HideSubTasksMode.HideAll });
+
+      await service.navigate(child.id);
+
+      expect(router.navigate).not.toHaveBeenCalled();
+      expect(taskService.showSubTasks).toHaveBeenCalledWith('parent-1');
+      expect(layoutService.focusTaskInViewWhenReady).toHaveBeenCalled();
+    });
+
+    it('leaves an already expanded parent alone', async () => {
+      const child = setUpSubTask({ _hideSubTasksMode: undefined });
+
+      await service.navigate(child.id);
+
+      expectNoStateChange();
+    });
+
+    it('does not touch live task UI state when navigating into the archive', async () => {
+      const child = setUpSubTask({ _hideSubTasksMode: HideSubTasksMode.HideAll });
+      taskService.getArchivedTasks.and.resolveTo([]);
+
+      await service.navigate(child.id, true);
+
+      expect(taskService.showSubTasks).not.toHaveBeenCalled();
+    });
   });
 });

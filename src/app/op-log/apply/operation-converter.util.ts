@@ -11,6 +11,7 @@ import { getEntityConfig, isLwwPayloadIdCanonical } from '../core/entity-registr
 import { PersistentAction } from '../core/persistent-action.interface';
 import { SyncLog } from '../../core/log';
 import { isValidDBDateStr } from '../../util/get-db-date-str';
+import { applyClearedFields } from '../../util/cleared-update-fields';
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -250,6 +251,17 @@ const assertValidTaskTimeSyncPayload = (
   }
 };
 
+export interface ConvertOpToActionOptions {
+  /**
+   * Replay this op as a full-state `loadAllData` even though its opType is not
+   * a full-state type. Set by the bulk meta-reducer for the client's OWN
+   * genesis op (#9863): its payload is the complete pre-migration state and
+   * nothing else in the log carries it, so replaying it as a no-op would
+   * rebuild the store with only post-migration data.
+   */
+  replayAsFullState?: boolean;
+}
+
 /**
  * Converts an Operation from the operation log back into a PersistentAction.
  * Used during sync replay and recovery to re-dispatch operations.
@@ -261,14 +273,18 @@ const assertValidTaskTimeSyncPayload = (
  * For full-state operations (SYNC_IMPORT, BACKUP_IMPORT, Repair), this wraps
  * the payload in `appDataComplete` to match the loadAllData action format.
  */
-export const convertOpToAction = (op: Operation): PersistentAction => {
+export const convertOpToAction = (
+  op: Operation,
+  options: ConvertOpToActionOptions = {},
+): PersistentAction => {
   // Resolve any aliased action types to their current names
   const actionType = ACTION_TYPE_ALIASES[op.actionType] ?? op.actionType;
   const lwwEntityType = getLwwEntityType(actionType);
 
   // Handle full-state operations (SYNC_IMPORT, BACKUP_IMPORT, Repair) specially
   // These need their payload wrapped in appDataComplete for the loadAllData action
-  const isFullStateOp = FULL_STATE_OP_TYPES.has(op.opType as OpType);
+  const isFullStateOp =
+    FULL_STATE_OP_TYPES.has(op.opType as OpType) || options.replayAsFullState === true;
   const isSingletonLww =
     !isFullStateOp &&
     lwwEntityType !== undefined &&
@@ -312,15 +328,15 @@ export const convertOpToAction = (op: Operation): PersistentAction => {
     delete actionPayload['id'];
   }
 
-  // Force `payload.id = op.entityId` for adapter-backed LWW Update ops. The
-  // op's `entityId` is the canonical identifier for adapters — producers also
-  // enforce this when creating ops, but a malformed/older remote op (or any
-  // path that ever drifts) could carry a payload.id that disagrees with
-  // op.entityId, in which case the consumer reducer at
-  // task-shared-meta-reducers/lww-update.meta-reducer.ts trusts payload.id and
-  // would update the WRONG entity. Singleton LWW actions target their feature
-  // state as a whole; their conflict-routing entityId may be composite and must
-  // not be injected into that state. Issues #7330, #9256.
+  // Force `payload.id = op.entityId` for adapter- and array-backed LWW Update
+  // ops (arrays since #9526). The op's `entityId` is the canonical identifier
+  // for both — producers also enforce this when creating ops, but a
+  // malformed/older remote op (or any path that ever drifts) could carry a
+  // payload.id that disagrees with op.entityId, in which case the consumer
+  // reducer at task-shared-meta-reducers/lww-update.meta-reducer.ts trusts
+  // payload.id and would update the WRONG entity. Singleton LWW actions target
+  // their feature state as a whole; their conflict-routing entityId may be
+  // composite and must not be injected into that state. Issues #7330, #9256.
   if (
     !isFullStateOp &&
     isLwwPayloadIdCanonical(lwwEntityType) &&
@@ -346,6 +362,24 @@ export const convertOpToAction = (op: Operation): PersistentAction => {
   // IMPORTANT: Spread actionPayload FIRST, then set type, to prevent entity properties
   // named 'type' (like SimpleCounter.type = 'ClickCounter') from overwriting the action type.
   const lwwPayload = isLwwUpdatePayload(op.payload) ? op.payload : undefined;
+
+  // Patch-mode LWW deltas list their field CLEARS out-of-band (#9776): JSON
+  // serialization dropped the undefined-valued keys on upload, so restore them
+  // here — the meta-reducer's updateOne then clears the field instead of
+  // silently leaving the losing value in place. `applyClearedFields` tolerates
+  // wire junk and never touches `id`. The isRecord guard keeps a malformed
+  // array payload from being object-spread into `{0: …}` (same trap as the
+  // singleton normalization above).
+  if (
+    lwwPayload?.lwwUpdateMode === 'patch' &&
+    Array.isArray(lwwPayload.clearedFields) &&
+    isRecord(actionPayload)
+  ) {
+    actionPayload = applyClearedFields(
+      actionPayload,
+      lwwPayload.clearedFields as string[],
+    ) as Record<string, unknown>;
+  }
   return {
     ...actionPayload,
     type: replayActionType,

@@ -104,8 +104,6 @@ export class GitlabSyncAdapterService implements IssueSyncAdapter<GitlabCfg> {
       );
     }
     IssueLog.log('[GitlabSyncAdapter] createIssue', {
-      title,
-      targetProjectPath,
       hasExtras: !!taskContext?.extras,
     });
     // Resolve quick-add extras BEFORE the POST so the initial issue lands
