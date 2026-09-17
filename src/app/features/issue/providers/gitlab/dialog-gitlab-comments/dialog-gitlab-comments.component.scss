@@ -2,9 +2,11 @@
   display: flex;
   align-items: center;
   gap: var(--s);
+  min-width: 0;
 
   .title-text {
     flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -12,8 +14,9 @@
 }
 
 .dialog-content {
-  min-width: 480px;
+  min-width: min(480px, calc(100vw - var(--s4)));
   max-height: 60vh;
+  overflow-x: hidden;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -33,6 +36,7 @@
 }
 
 .comment {
+  min-width: 0;
   padding: var(--s2);
   background: var(--card-bg);
   border: 1px solid var(--divider-color);
@@ -71,6 +75,10 @@
   }
 }
 
+:host-context(.isTouchPrimary) .comment .comment-actions {
+  opacity: 1;
+}
+
 .edit-field {
   width: 100%;
   margin-top: var(--s);
@@ -84,6 +92,7 @@
 
 .comment-header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--s);
   margin-bottom: var(--s-half);
@@ -91,10 +100,13 @@
 
   .author {
     font-weight: 500;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .timestamp {
     color: var(--text-color-muted);
+    white-space: nowrap;
   }
 
   .badge {
@@ -135,6 +147,7 @@
 
 .composer-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: var(--s);
 
